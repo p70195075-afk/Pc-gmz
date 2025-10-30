@@ -1,4 +1,4 @@
-name: RDP
+name: PCGMZ
 
 on:
   workflow_dispatch:
@@ -29,12 +29,12 @@ jobs:
           $chars = ([char[]](33..126))
           $password = -join ($chars | Get-Random -Count 14)
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          if (-not (Get-LocalUser -Name "PCGMZ" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "PCGMZ" -Password $securePass -AccountNeverExpires
           }
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
+          Add-LocalGroupMember -Group "Administrators" -Member "PCGMZ"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PCGMZ"
+          echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
@@ -49,7 +49,7 @@ jobs:
       - name: Establish Tailscale Connection
         shell: powershell
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "gh-rdp-${{ github.run_id }}"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-${{ github.run_id }}"
           Start-Sleep -Seconds 10
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           if (-not $tsIP) { Write-Error "Tailscale IP not found"; exit 1 }
@@ -72,6 +72,6 @@ jobs:
           Write-Host "Password: $env:RDP_PASS"
           Write-Host "==============================="
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP still running..."
+              Write-Host "[$(Get-Date)] PCGMZ Session still running..."
               Start-Sleep -Seconds 300
           }
