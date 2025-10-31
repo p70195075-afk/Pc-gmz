@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 4320   # 72 jam (48 jam = 2880)
+    timeout-minutes: 4320
 
     steps:
       - name: Disable Sleep / Hibernate / PowerSave
@@ -132,18 +132,21 @@ jobs:
       - name: Enable DirectStorage runtime (if available)
         shell: powershell
         run: |
-          # Attempt to install DirectStorage runtime via winget if available; otherwise notify
+          # Try installing DirectStorage via winget but never fail the step
           if (Get-Command winget -ErrorAction SilentlyContinue) {
             try {
-              winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements --source winget
-              Write-Host "DirectStorage install attempted"
+              & winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements --source winget
+              $code = $LASTEXITCODE
+              if ($code -ne 0) { Write-Host "winget returned exit code $code. Package may be unavailable in this runner." }
+              else { Write-Host "DirectStorage install succeeded (winget exit 0)" }
             } catch {
-              Write-Host "DirectStorage failed or not available, safely skipping"
+              Write-Host "winget threw an exception but continuing: $_"
             }
           } else {
             Write-Host "winget not available; skipping DirectStorage install. Manual install recommended: https://aka.ms/directstorage"
           }
           Write-Host "Continuing without DirectStorage..."
+          exit 0
 
       - name: Maintain Connection
         shell: powershell
