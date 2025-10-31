@@ -142,7 +142,6 @@ jobs:
           foreach ($p in $ports) {
             Start-Job -ScriptBlock { param($pp) Start-Listener -p $pp } -ArgumentList $p | Out-Null
           }
-'@
           $file = Join-Path $honeypotPath "honeypot.ps1"
           $script | Out-File -FilePath $file -Encoding ASCII
           $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$file`""
