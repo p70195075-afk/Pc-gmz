@@ -28,14 +28,14 @@ jobs:
           netsh interface tcp set global ecncapability=enabled
           echo QoS Gaming Turbo Applied
 
-      - name: Optimize PCGMZ Keepalive
+      - name: Optimize RDP Keepalive
         shell: powershell
         run: |
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
           echo RDP KeepAlive Enabled
 
-      - name: Configure Core PCGMZ Settings
+      - name: Configure Core RDP Settings
         shell: powershell
         run: |
           Start-Process powershell -Verb runAs -ArgumentList @"
@@ -52,7 +52,7 @@ jobs:
           New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
           echo Idle Disconnect Disabled
 
-      - name: Create PCGMZ User Secure
+      - name: Create RDP User Secure
         shell: powershell
         run: |
           Add-Type -AssemblyName System.Security
@@ -84,7 +84,7 @@ jobs:
           $tsIP = & "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Verify PCGMZ 
+      - name: Verify RDP
         shell: powershell
         run: |
           $result = Test-NetConnection -ComputerName $env:TS_IP -Port 3389
@@ -120,7 +120,7 @@ jobs:
         shell: powershell
         run: |
           # Low-latency kernel and scheduler tweaks
-          reg add "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
           # Ensure hardware-accelerated GPU scheduling is enabled (HAGS)
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
           # Reduce NIC interrupt moderation (if supported) to lower packet latency
@@ -140,14 +140,6 @@ jobs:
             Write-Host "winget not available; skipping DirectStorage install. Manual install recommended: https://aka.ms/directstorage"
           }
 
-      - name: Heartbeat Keep Alive
-        shell: powershell
-        run: |
-          while ($true) {
-            Write-Host "[KEEPALIVE] $(Get-Date)"
-            Start-Sleep 300
-          }
-
       - name: Maintain Connection
         shell: powershell
         run: |
@@ -160,4 +152,12 @@ jobs:
           while ($true) {
               Write-Host "[$(Get-Date)] PCGMZ Session still running..."
               Start-Sleep -Seconds 300
+          }
+
+      - name: Heartbeat Keep Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[KEEPALIVE] $(Get-Date)"
+            Start-Sleep 300
           }
