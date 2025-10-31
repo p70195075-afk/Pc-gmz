@@ -6,9 +6,43 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 4320
 
     steps:
+      - name: Disable Sleep / Hibernate / PowerSave
+        shell: powershell
+        run: |
+          powercfg /change standby-timeout-ac 0
+          powercfg /change monitor-timeout-ac 0
+          powercfg /hibernate off
+          powercfg /setactive SCHEME_MIN
+          echo Disabled Sleep/Hibernate
+
+      - name: Optimize TCP Stack + QoS Gaming
+        shell: powershell
+        run: |
+          netsh interface tcp set heuristics disabled
+          netsh interface tcp set global congestionprovider=ctcp
+          netsh interface tcp set global rss=enabled
+          netsh interface tcp set global chimney=disabled
+          netsh interface tcp set global ecncapability=enabled
+          echo QoS Gaming Turbo Applied
+
+      - name: Optimize RDP Keepalive
+        shell: powershell
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
+          echo RDP KeepAlive Enabled
+
+      - name: Anti Idle + Session Timeout Policies
+        shell: powershell
+        run: |
+          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'MaxIdleTime' -Value 0 -PropertyType DWord -Force
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
+          echo Idle Disconnect Disabled
+
       - name: Configure Core RDP Settings
         shell: powershell
         run: |
@@ -62,11 +96,27 @@ jobs:
           $result = Test-NetConnection -ComputerName $env:TS_IP -Port 3389
           if (-not $result.TcpTestSucceeded) { Write-Error "RDP port unreachable"; exit 1 }
 
+      - name: Auto Reconnect Monitor
+        shell: powershell
+        run: |
+          $script = @"
+          while ($true) {
+            if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
+              Restart-Service TermService -Force
+              Get-NetAdapter | Disable-NetAdapter -Confirm:$false; Start-Sleep 2; Get-NetAdapter | Enable-NetAdapter -Confirm:$false
+            }
+            Start-Sleep 15
+          }
+          "@
+          $path = "$env:ProgramData\rdp-monitor.ps1"
+          $script | Out-File $path
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
+
       - name: Maintain Connection
         shell: powershell
         run: |
           Write-Host "==============================="
-          Write-Host "RDP Info:"
+          Write-Host "PCGMZ Info:"
           Write-Host "Address: $env:TS_IP"
           Write-Host "Username: $env:RDP_USER"
           Write-Host "Password: $env:RDP_PASS"
