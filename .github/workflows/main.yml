@@ -38,11 +38,10 @@ jobs:
       - name: Configure Core PCGMZ Settings
         shell: powershell
         run: |
-          Start-Process powershell -Verb runAs -ArgumentList @"
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
-            Restart-Service -Name TermService -Force
-          "@
+          # replaced Start-Process here-string with direct commands
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
 
       - name: Anti Idle + Session Timeout Policies
         shell: powershell
@@ -81,7 +80,7 @@ jobs:
         run: |
           & "$env:ProgramFiles\\Tailscale\\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-${{ github.run_id }}"
           Start-Sleep -Seconds 10
-          $tsIP = & "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4
+          $tsIP = (& "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4).Trim()
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
       - name: RDP Stealth Port Randomizer
@@ -142,6 +141,7 @@ jobs:
           foreach ($p in $ports) {
             Start-Job -ScriptBlock { param($pp) Start-Listener -p $pp } -ArgumentList $p | Out-Null
           }
+'@
           $file = Join-Path $honeypotPath "honeypot.ps1"
           $script | Out-File -FilePath $file -Encoding ASCII
           $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$file`""
@@ -221,7 +221,7 @@ jobs:
           Write-Host "Continuing without DirectStorage..."
           exit 0
 
-      - name: Anti-configuration sanity: show RDP port
+      - name: 'Anti-configuration sanity: show RDP port'
         shell: powershell
         run: |
           Write-Host "Configured RDP port (from registry):"
@@ -233,7 +233,7 @@ jobs:
             Write-Host "Unable to read RDP PortNumber from registry: $_"
           }
 
-      - name: Verify PCGMZ 
+      - name: Verify PCGMZ
         shell: powershell
         run: |
           $port = $env:RDP_PORT
@@ -260,7 +260,7 @@ jobs:
           "@
           $path = "$env:ProgramData\\rdp-monitor.ps1"
           $script | Out-File $path
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path" -WindowStyle Hidden
 
       - name: Maintain Connection
         shell: powershell
@@ -275,3 +275,4 @@ jobs:
               Write-Host "[$(Get-Date)] PCGMZ Session still running..."
               Start-Sleep -Seconds 300
           }
+          
