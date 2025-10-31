@@ -148,14 +148,6 @@ jobs:
           Write-Host "Continuing without DirectStorage..."
           exit 0
 
-      - name: Heartbeat Keep Alive
-        shell: powershell
-        run: |
-          while ($true) {
-            Write-Host "[KEEPALIVE] $(Get-Date)"
-            Start-Sleep 300
-          }
-
       - name: Maintain Connection
         shell: powershell
         run: |
