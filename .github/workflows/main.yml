@@ -38,9 +38,11 @@ jobs:
       - name: Configure Core PCGMZ Settings
         shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-          netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
+          Start-Process powershell -Verb runAs -ArgumentList @"
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
+            Restart-Service -Name TermService -Force
+          "@
 
       - name: Anti Idle + Session Timeout Policies
         shell: powershell
@@ -79,87 +81,30 @@ jobs:
         run: |
           & "$env:ProgramFiles\\Tailscale\\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-${{ github.run_id }}"
           Start-Sleep -Seconds 10
-          $tsIP = (& "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4).Trim()
+          $tsIP = & "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: RDP Stealth Port Randomizer
+      - name: Verify PCGMZ 
         shell: powershell
         run: |
-          $min = 10000; $max = 60000
-          $rnd = Get-Random -Minimum $min -Maximum $max
-          $rndPort = [int]$rnd
-          Write-Host "Selected stealth RDP port: $rndPort"
-          if (Get-NetFirewallRule -DisplayName 'RDP-Allow' -ErrorAction SilentlyContinue) {
-            Get-NetFirewallRule -DisplayName 'RDP-Allow' | Set-NetFirewallRule -Enabled False
-          }
-          if (Get-NetFirewallRule -DisplayName "RDP-Stealth-$rndPort" -ErrorAction SilentlyContinue) {
-            Remove-NetFirewallRule -DisplayName "RDP-Stealth-$rndPort" -ErrorAction SilentlyContinue
-          }
-          New-NetFirewallRule -DisplayName "RDP-Stealth-$rndPort" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $rndPort
-          $rdpReg = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-          New-ItemProperty -Path $rdpReg -Name 'PortNumber' -Value $rndPort -PropertyType DWord -Force
-          Restart-Service -Name TermService -Force
-          echo "RDP_PORT=$rndPort" >> $env:GITHUB_ENV
-          Write-Host "RDP port randomized to $rndPort (firewall rule RDP-Stealth-$rndPort created)"
+          $result = Test-NetConnection -ComputerName $env:TS_IP -Port 3389
+          if (-not $result.TcpTestSucceeded) { exit 1 }
 
-      - name: w
+      - name: Auto Reconnect Monitor
         shell: powershell
         run: |
-          $honeypotPath = "$env:ProgramData\\pcgmz-honeypot"
-          New-Item -ItemType Directory -Path $honeypotPath -Force | Out-Null
-          $file = Join-Path $honeypotPath "honeypot.ps1"
-
-          $scriptLines = @(
-            '$ports = @(21,22,23,25,53,80,110,143,443,3389,5900)'
-            '$log = Join-Path $env:ProgramData "pcgmz-honeypot\\connections.log"'
-            'function Start-Listener {'
-            '  param($p)'
-            '  try {'
-            '    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $p)'
-            '    $listener.Start()'
-            '    while ($true) {'
-            '      if ($listener.Pending()) {'
-            '        $client = $listener.AcceptTcpClient()'
-            '        $ip = $client.Client.RemoteEndPoint.ToString()'
-            '        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"'
-            '        "$time - Port $p - Connection from $ip" | Out-File -FilePath $log -Append'
-            '        try {'
-            '          $stream = $client.GetStream()'
-            '          $banner = "220 pcgmz-honeypot\r\n"'
-            '          $buf = [System.Text.Encoding]::ASCII.GetBytes($banner)'
-            '          $stream.Write($buf,0,$buf.Length)'
-            '          $stream.Flush()'
-            '        } catch {}'
-            '        $client.Close()'
-            '      } else { Start-Sleep -Milliseconds 200 }'
-            '    }'
-            '  } catch { "$((Get-Date).ToString()) - Listener failed on port $p : $_" | Out-File -FilePath $log -Append }'
-            '}'
-            'foreach ($p in $ports) { Start-Job -ScriptBlock { param($pp) Start-Listener -p $pp } -ArgumentList $p | Out-Null }'
-          )
-          $scriptLines | Out-File -FilePath $file -Encoding ASCII -Force
-
-          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$file`""
-          $trigger = New-ScheduledTaskTrigger -AtStartup -RepetitionInterval (New-TimeSpan -Minutes 5)
-          Register-ScheduledTask -TaskName "PCGMZ-Honeypot" -Action $action -Trigger $trigger -RunLevel Highest -Force
-          Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$file`"" -WindowStyle Hidden
-          Write-Host "Honeypot installed at $file and scheduled at startup."
-          try {
-            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'DefaultTTL' -Value 64 -PropertyType DWord -Force
-            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'TcpWindowSize' -Value 64240 -PropertyType DWord -Force
-            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'Tcp1323Opts' -Value 1 -PropertyType DWord -Force
-            Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
-            $servicesToDisable = @('Telnet','Tftp')
-            foreach ($s in $servicesToDisable) {
-              if (Get-Service -Name $s -ErrorAction SilentlyContinue) {
-                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
-                try { Set-Service -Name $s -StartupType Disabled } catch {}
-              }
+          $script = @"
+          while ($true) {
+            if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
+              Restart-Service TermService -Force
+              Get-NetAdapter | Disable-NetAdapter -Confirm:$false; Start-Sleep 2; Get-NetAdapter | Enable-NetAdapter -Confirm:$false
             }
-            Write-Host "Fingerprint-obfuscation registry tweaks applied (best-effort)."
-          } catch {
-            Write-Host "Some fingerprint tweaks may not be supported on this runner: $_"
+            Start-Sleep 15
           }
+          "@
+          $path = "$env:ProgramData\\rdp-monitor.ps1"
+          $script | Out-File $path
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
 
       - name: Game Performance Boost RTX4090 Tweaks
         shell: powershell
@@ -171,24 +116,14 @@ jobs:
           netsh int tcp set global autotuninglevel=experimental
           echo RTX4090 Game Performance Boost Applied
 
-      - name: GPU passthrough / kernel scheduling boost
-        shell: powershell
-        run: |
-          try {
-            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
-            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'GpuFairness' -Value 0 -PropertyType DWord -Force
-            Add-Type -AssemblyName kernel32
-            $n = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress (Get-ModuleHandle kernel32) 'timeBeginPeriod'), [Action[Int32]])
-          } catch {
-            Write-Host "GPU scheduler tweaks: some commands are best-effort on hosted runner: $_"
-          }
-          Write-Host "Applied GPU scheduling hints. Note: true GPU passthrough requires hypervisor configuration."
-
       - name: Enable Ultra Low Latency Mode
         shell: powershell
         run: |
+          # Low-latency kernel and scheduler tweaks
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
+          # Ensure hardware-accelerated GPU scheduling is enabled (HAGS)
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
+          # Reduce NIC interrupt moderation (if supported) to lower packet latency
           Get-NetAdapter | ForEach-Object { 
             try { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -NoRestart -ErrorAction SilentlyContinue } catch { }
           }
@@ -197,6 +132,7 @@ jobs:
       - name: Enable DirectStorage runtime (if available)
         shell: powershell
         run: |
+          # Try installing DirectStorage via winget but never fail the step
           if (Get-Command winget -ErrorAction SilentlyContinue) {
             try {
               & winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements --source winget
@@ -212,47 +148,6 @@ jobs:
           Write-Host "Continuing without DirectStorage..."
           exit 0
 
-      - name: 'Anti-configuration sanity: show RDP port'
-        shell: powershell
-        run: |
-          Write-Host "Configured RDP port (from registry):"
-          $rdpReg = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-          try {
-            $port = (Get-ItemProperty -Path $rdpReg -Name PortNumber -ErrorAction Stop).PortNumber
-            Write-Host "RDP PortNumber (registry) = $port"
-          } catch {
-            Write-Host "Unable to read RDP PortNumber from registry: $_"
-          }
-
-      - name: Verify PCGMZ
-        shell: powershell
-        run: |
-          $port = $env:RDP_PORT
-          if (-not $port) { $port = 3389 }
-          $result = Test-NetConnection -ComputerName $env:TS_IP -Port $port
-          if (-not $result.TcpTestSucceeded) { 
-            Write-Host "Connection test to $env:TS_IP on port $port failed."
-            exit 1
-          } else {
-            Write-Host "Connection to $env:TS_IP on port $port succeeded."
-          }
-
-      - name: Auto Reconnect Monitor
-        shell: powershell
-        run: |
-          $script = @"
-          while ($true) {
-            if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
-              Restart-Service TermService -Force
-              Get-NetAdapter | Disable-NetAdapter -Confirm:$false; Start-Sleep 2; Get-NetAdapter | Enable-NetAdapter -Confirm:$false
-            }
-            Start-Sleep 15
-          }
-          "@
-          $path = "$env:ProgramData\\rdp-monitor.ps1"
-          $script | Out-File $path -Encoding ASCII -Force
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path" -WindowStyle Hidden
-
       - name: Maintain Connection
         shell: powershell
         run: |
@@ -265,4 +160,4 @@ jobs:
           while ($true) {
               Write-Host "[$(Get-Date)] PCGMZ Session still running..."
               Start-Sleep -Seconds 300
-              
+          }
