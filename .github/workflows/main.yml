@@ -28,14 +28,14 @@ jobs:
           netsh interface tcp set global ecncapability=enabled
           echo QoS Gaming Turbo Applied
 
-      - name: Optimize RDP Keepalive
+      - name: Optimize PCGMZ Keepalive
         shell: powershell
         run: |
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
           echo RDP KeepAlive Enabled
 
-      - name: Configure Core RDP Settings
+      - name: Configure Core PCGMZ Settings
         shell: powershell
         run: |
           Start-Process powershell -Verb runAs -ArgumentList @"
@@ -52,7 +52,7 @@ jobs:
           New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
           echo Idle Disconnect Disabled
 
-      - name: Create RDP User Secure
+      - name: Create PCGMZ User Secure
         shell: powershell
         run: |
           Add-Type -AssemblyName System.Security
@@ -84,7 +84,7 @@ jobs:
           $tsIP = & "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Verify RDP
+      - name: Verify PCGMZ 
         shell: powershell
         run: |
           $result = Test-NetConnection -ComputerName $env:TS_IP -Port 3389
@@ -148,6 +148,14 @@ jobs:
           Write-Host "Continuing without DirectStorage..."
           exit 0
 
+      - name: Heartbeat Keep Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[KEEPALIVE] $(Get-Date)"
+            Start-Sleep 300
+          }
+
       - name: Maintain Connection
         shell: powershell
         run: |
@@ -160,12 +168,4 @@ jobs:
           while ($true) {
               Write-Host "[$(Get-Date)] PCGMZ Session still running..."
               Start-Sleep -Seconds 300
-          }
-
-      - name: Heartbeat Keep Alive
-        shell: powershell
-        run: |
-          while ($true) {
-            Write-Host "[KEEPALIVE] $(Get-Date)"
-            Start-Sleep 300
           }
