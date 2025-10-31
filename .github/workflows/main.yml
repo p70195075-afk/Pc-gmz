@@ -134,11 +134,16 @@ jobs:
         run: |
           # Attempt to install DirectStorage runtime via winget if available; otherwise notify
           if (Get-Command winget -ErrorAction SilentlyContinue) {
-            winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements; Write-Host "DirectStorage install attempted"
-            Write-Host "Attempted DirectStorage install via winget"
+            try {
+              winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements --source winget
+              Write-Host "DirectStorage install attempted"
+            } catch {
+              Write-Host "DirectStorage failed or not available, safely skipping"
+            }
           } else {
             Write-Host "winget not available; skipping DirectStorage install. Manual install recommended: https://aka.ms/directstorage"
           }
+          Write-Host "Continuing without DirectStorage..."
 
       - name: Maintain Connection
         shell: powershell
