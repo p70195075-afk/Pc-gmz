@@ -1,1 +1,309 @@
+name: PCGMZ Sunshine Moonlight
 
+on:
+  workflow_dispatch:
+
+jobs:
+  sunshine-moonlight:
+    runs-on: windows-latest
+    timeout-minutes: 4680
+
+    steps:
+      - name: Disable Sleep / Hibernate / PowerSave
+        shell: powershell
+        run: |
+          powercfg /change standby-timeout-ac 0
+          powercfg /change monitor-timeout-ac 0
+          powercfg /hibernate off
+          powercfg /setactive SCHEME_MIN
+          echo Disabled Sleep/Hibernate
+
+      - name: Optimize Network for Streaming
+        shell: powershell
+        run: |
+          netsh interface tcp set global congestionprovider=ctcp
+          netsh interface tcp set global rss=enabled
+          netsh interface tcp set global ecncapability=enabled
+          netsh int tcp set global autotuninglevel=experimental
+          netsh interface tcp set global timestamps=disabled
+          echo Network Streaming Optimization Applied
+
+      - name: Configure Core RDP Settings
+        shell: powershell
+        run: |
+          Start-Process powershell -Verb runAs -ArgumentList @"
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
+            Restart-Service -Name TermService -Force
+          "@
+
+      - name: Create PCGMZ User
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Security
+          $chars = ([char[]](33..126))
+          $password = -join ($chars | Get-Random -Count 14)
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          if (-not (Get-LocalUser -Name "PCGMZ" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "PCGMZ" -Password $securePass -AccountNeverExpires
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "PCGMZ"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PCGMZ"
+          echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+
+      - name: Install Latest Sunshine
+        shell: powershell
+        run: |
+          # Download latest Sunshine release
+          $url = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-windows-portable.zip"
+          $file = "$env:TEMP\sunshine.zip"
+          $extractPath = "C:\Sunshine"
+          
+          echo "Downloading Sunshine..."
+          Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
+          
+          echo "Extracting Sunshine..."
+          Expand-Archive -Path $file -DestinationPath $extractPath -Force
+          Remove-Item $file -Force
+          
+          echo "Sunshine installed to $extractPath"
+
+      - name: Configure Sunshine
+        shell: powershell
+        run: |
+          $sunshinePath = "C:\Sunshine"
+          $configDir = "$env:APPDATA\Sunshine"
+          
+          # Create config directory
+          New-Item -Path $configDir -ItemType Directory -Force
+          
+          # Generate basic sunshine config
+          $config = @{
+            "origin_web_ui_allowed" = "pc"
+            "min_log_level" = 2
+            "upnp" = false
+            "streaming" = @{
+              "audio" = @{
+                "encoder" = "aac"
+                "bitrate" = 2000
+              }
+              "video" = @{
+                "encoder" = "h264"
+                "encoder_options" = "preset=p4"
+                "hevc_mode" = 0
+                "hdr" = false
+                "min_threads" = 1
+                "max_pixel_width" = 2560
+                "max_pixel_height" = 1440
+                "bitrate_ceiling" = 20000
+                "bitrate_default" = 10000
+              }
+              "display" = @{
+                "fps" = 60
+                "output_name" = "sunshine_output"
+              }
+            }
+            "inputs" = @{
+              "back_button_timeout" = 5
+              "virtual_controllers" = @{
+                "unload_timeout" = 5
+              }
+            }
+          }
+          
+          # Convert to JSON and save
+          $configJson = $config | ConvertTo-Json -Depth 10
+          $configJson | Out-File -FilePath "$configDir\sunshine.conf" -Encoding utf8
+          
+          echo "Sunshine configuration created"
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $file = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $file
+          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
+          Remove-Item $file -Force
+
+      - name: Establish Tailscale Connection
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-Sunshine-${{ github.run_id }}"
+          Start-Sleep -Seconds 10
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Configure Sunshine Firewall Rules
+        shell: powershell
+        run: |
+          # Sunshine default ports
+          $ports = @(47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002, 48010)
+          
+          foreach ($port in $ports) {
+              netsh advfirewall firewall add rule name="Sunshine-$port-TCP" dir=in action=allow protocol=TCP localport=$port
+              netsh advfirewall firewall add rule name="Sunshine-$port-UDP" dir=in action=allow protocol=UDP localport=$port
+          }
+          
+          # Allow only from Tailscale network
+          New-NetFirewallRule -DisplayName "Sunshine-Tailscale-Only" -Direction Inbound -Protocol TCP -LocalPort 47989 -Action Allow -RemoteAddress "100.64.0.0/10"
+          
+          echo "Sunshine firewall rules configured"
+
+      - name: Optimize Sunshine Performance
+        shell: powershell
+        run: |
+          # Set high performance power plan
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          
+          # Optimize for software encoding
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
+          
+          # Disable background apps
+          New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" -Name "GlobalUserDisabled" -Value 1 -PropertyType DWord -Force
+          
+          echo "Sunshine performance optimized"
+
+      - name: Install Sunshine as Service
+        shell: powershell
+        run: |
+          $sunshinePath = "C:\Sunshine"
+          
+          # Install Sunshine as Windows Service
+          Start-Process -FilePath "$sunshinePath\sunshine.exe" -ArgumentList "--install" -Wait
+          
+          # Start Sunshine service
+          Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          
+          # Wait for service to initialize
+          Start-Sleep -Seconds 10
+          
+          echo "Sunshine service installed and started"
+
+      - name: Create Sunshine Auto-Config Script
+        shell: powershell
+        run: |
+          $script = @'
+          # Sunshine auto-configuration script
+          $sunshinePath = "C:\Sunshine"
+          $configDir = "$env:APPDATA\Sunshine"
+          
+          # Wait for Sunshine to generate initial config
+          Start-Sleep -Seconds 15
+          
+          # Restart Sunshine to apply settings
+          Restart-Service -Name "Sunshine" -Force
+          
+          Write-Host "Sunshine should now be running on port 47989"
+          Write-Host "Access web UI: https://$(tailscale ip -4):47989"
+          
+          $scriptPath = "$env:TEMP\setup-sunshine.ps1"
+          $script | Out-File -FilePath $scriptPath -Encoding utf8
+          
+          # Run setup script
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath" -Wait
+          
+          echo "Sunshine auto-config completed"
+
+      - name: RDP Port Randomizer
+        shell: powershell
+        run: |
+          $randomPort = Get-Random -Minimum 10000 -Maximum 65535
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
+          Restart-Service -Name TermService -Force
+          echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
+
+      - name: Verify Sunshine Installation
+        shell: powershell
+        run: |
+          # Check if Sunshine service is running
+          $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          if ($service -and $service.Status -eq 'Running') {
+              Write-Host "✅ Sunshine service is RUNNING"
+          } else {
+              Write-Host "❌ Sunshine service not running"
+              exit 1
+          }
+          
+          # Test Sunshine port
+          $result = Test-NetConnection -ComputerName localhost -Port 47989 -WarningAction SilentlyContinue
+          if ($result.TcpTestSucceeded) {
+              Write-Host "✅ Sunshine port 47989 is OPEN"
+          } else {
+              Write-Host "❌ Sunshine port 47989 is CLOSED"
+          }
+          
+          # Display Tailscale IP
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Write-Host "🌐 Tailscale IP: $tsIP"
+
+      - name: Create Connection Monitor
+        shell: powershell
+        run: |
+          $script = @'
+          while ($true) {
+              try {
+                  # Check Sunshine service
+                  $sunshine = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+                  if ($sunshine.Status -ne 'Running') {
+                      Write-Host "[$(Get-Date)] Sunshine service stopped - RESTARTING"
+                      Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+                  }
+                  
+                  # Check network connectivity
+                  if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
+                      Write-Host "[$(Get-Date)] Network issue detected - RESETTING"
+                      Get-NetAdapter | Restart-NetAdapter -Confirm:$false
+                  }
+                  
+                  Write-Host "[$(Get-Date)] System OK - Sunshine running"
+              }
+              catch {
+                  Write-Host "[$(Get-Date)] Monitor error: $_"
+              }
+              
+              Start-Sleep -Seconds 30
+          }
+          $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
+          $script | Out-File -FilePath $scriptPath -Encoding utf8
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath"
+
+      - name: Display Connection Info
+        shell: powershell
+        run: |
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "🎮 PCGMZ SUNSHINE READY FOR MOONLIGHT"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "🌐 Sunshine Host: $tsIP"
+          Write-Host "🔑 Port: 47989"
+          Write-Host ""
+          Write-Host "📱 MOONLIGHT SETUP:"
+          Write-Host "1. Install Moonlight app"
+          Write-Host "2. Add PC manually: $tsIP"
+          Write-Host "3. First setup: Access https://$tsIP`:47989"
+          Write-Host "4. Default credentials: (set in Sunshine web UI)"
+          Write-Host ""
+          Write-Host "🖥️ RDP Access: $tsIP`:$env:RDP_PORT"
+          Write-Host "👤 User: $env:RDP_USER"
+          Write-Host "🔒 Pass: $env:RDP_PASS"
+          Write-Host ""
+          Write-Host "⚡ Sunshine Features:"
+          Write-Host "   - Cross-platform (AMD/Intel/NVIDIA)"
+          Write-Host "   - Customizable bitrate & resolution"
+          Write-Host "   - Multiple client support"
+          Write-Host "   - Active development"
+          Write-Host ""
+          Write-Host "=========================================="
+
+      - name: Maintain Session
+        shell: powershell
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] 🎮 PCGMZ Sunshine Active - $env:TS_IP"
+              Start-Sleep -Seconds 300
+          }
