@@ -134,11 +134,7 @@ jobs:
       - name: Enable RDP for Management
         shell: powershell
         run: |
-          Start-Process powershell -Verb runAs -ArgumentList @"
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
-            Restart-Service -Name TermService -Force
-          "@
+          Start-Process powershell -Verb runAs -ArgumentList 'Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force; netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389; Restart-Service -Name TermService -Force'
           echo "RDP Enabled for management"
 
       - name: Randomize RDP Port for Security
@@ -216,6 +212,12 @@ jobs:
           Write-Host "1. Install Moonlight app"
           Write-Host "2. Add PC manually: $env:TS_IP"
           Write-Host "3. Stream langsung atau akses RDP dulu"
+          Write-Host ""
+          Write-Host "⚡ SUNSHINE ADVANTAGES:"
+          Write-Host "✅ Universal compatibility"
+          Write-Host "✅ Fast installation (5-10 mins)"
+          Write-Host "✅ Open source & customizable"
+          Write-Host "✅ Works with any GPU"
           Write-Host ""
           Write-Host "=========================================="
 
