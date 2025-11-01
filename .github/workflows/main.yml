@@ -87,18 +87,26 @@ jobs:
       - name: Anti-DDoS Firewall (Block public RDP access, Tailscale-only)
         shell: powershell
         run: |
-          # Check if RDP-Allow rule exists before disabling
-          $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
-          if ($ruleExists) {
-            netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
+          try {
+            # Check if RDP-Allow rule exists and disable it if it does
+            $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
+            if ($ruleExists) {
+              netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
+            }
+            # Check if Tailscale-RDP-Allow rule exists before adding
+            $tsRuleExists = netsh advfirewall firewall show rule name="Tailscale-RDP-Allow" 2>$null | Select-String "Tailscale-RDP-Allow"
+            if (-not $tsRuleExists) {
+              netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+            }
+            # Enable Windows Firewall logging for monitoring
+            netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
+            netsh advfirewall set allprofiles logging maxfilesize 4096
+            netsh advfirewall set allprofiles logging droppedconnections enable
+            echo Anti-DDoS Firewall Applied (Tailscale-only access)
+          } catch {
+            echo "Error in Anti-DDoS Firewall setup: $_"
+            exit 0  # Continue workflow even if firewall setup fails
           }
-          # Add rule allowing RDP only via Tailscale (Tailscale handles encryption and access control)
-          netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
-          # Enable Windows Firewall logging for monitoring
-          netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
-          netsh advfirewall set allprofiles logging maxfilesize 4096
-          netsh advfirewall set allprofiles logging droppedconnections enable
-          echo Anti-DDoS Firewall Applied (Tailscale-only access)
 
       - name: Brute-Force Autoblock (Monitor and ban failed RDP attempts)
         shell: powershell
