@@ -255,7 +255,6 @@ jobs:
               
               Start-Sleep -Seconds 30
           }
-'@
           $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
           $script | Out-File -FilePath $scriptPath -Encoding utf8
           Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath" -WindowStyle Hidden
