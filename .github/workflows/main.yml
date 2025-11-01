@@ -9,6 +9,7 @@ jobs:
     timeout-minutes: 4680  # 78 jam uptime
 
     steps:
+      # ------------------ SYSTEM OPTIMIZATIONS ------------------
       - name: Disable Sleep / Hibernate / PowerSave
         shell: powershell
         run: |
@@ -74,6 +75,7 @@ jobs:
             exit 0
           }
 
+      # ------------------ USER AND NETWORK SETUP ------------------
       - name: Create PCGMZ User Secure
         shell: powershell
         run: |
@@ -138,6 +140,7 @@ jobs:
             exit 0
           }
 
+      # ------------------ SUNSHINE (GAMESTREAM) SETUP ------------------
       - name: Install Sunshine (GameStream host)
         shell: powershell
         run: |
@@ -246,6 +249,7 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
             exit 0
           }
 
+      # ------------------ AUDIO AND PERFORMANCE TWEAKS ------------------
       - name: Install VB-Audio Virtual Cable (audio loopback)
         shell: powershell
         run: |
@@ -260,9 +264,11 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
           } catch {
             Write-Host "Could not download/install VB-Audio automatically. Manual install may be required: https://vb-audio.com/Cable/"
           }
+          # Create simple script to set default communication and playback device to Cable Output if present
           $setAudioScript = @"
           Add-Type -AssemblyName System.Windows.Forms
           \$devs = Get-WmiObject -Namespace root\cimv2 -Class Win32_SoundDevice
+          # Note: automatic setting of default audio device often needs third-party tool or registry edits; leaving manual fallback.
           Write-Host 'Audio loopback installer finished. If Virtual Cable is installed, set Cable Input as recording device and Cable Output as playback device manually or via your automation.'
 "@
           $path = "$env:ProgramData\\set-audio-note.ps1"
@@ -283,6 +289,7 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
             exit 0
           }
 
+      # ------------------ MONITORING AND MAINTENANCE ------------------
       - name: Create Sunshine auto-restart monitor script
         shell: powershell
         run: |
@@ -296,6 +303,7 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
                   Write-Host \"[Sunshine Monitor] Sunshine not running. Attempting restart...\"
                   if ($svc) { Start-Service -Name Sunshine -ErrorAction SilentlyContinue }
                   else {
+                    # Attempt to start sunshine.exe directly if service not present
                     \$exe = 'C:\\Program Files\\Sunshine\\sunshine.exe'
                     if (Test-Path \$exe) { Start-Process -FilePath \$exe -ArgumentList '--service' -WindowStyle Hidden -ErrorAction SilentlyContinue }
                   }
@@ -308,7 +316,9 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
             }
 "@
             $script | Out-File -FilePath $monitorPath -Encoding utf8 -Force
+            # Create scheduled task to run monitor at startup as SYSTEM
             schtasks /Create /RU SYSTEM /SC ONSTART /TN "PCGMZ_SunshineMonitor" /TR "powershell -ExecutionPolicy Bypass -File `"$monitorPath`"" /F
+            # Start monitor now
             Start-Process -FilePath powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$monitorPath`"" -WindowStyle Hidden
             Write-Host "Sunshine monitor created and scheduled task added."
           } catch {
@@ -352,4 +362,8 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
         run: |
           Write-Host "==============================="
           Write-Host "PCGMZ GameStream Ready:"
-          Write-Host "Tailscale IP: $env
+          Write-Host "Tailscale IP: $env:TS_IP"
+          Write-Host "RDP Port: 3389"
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Password: $env:RDP_PASS"
+          Write-Host "--------------------------------"
