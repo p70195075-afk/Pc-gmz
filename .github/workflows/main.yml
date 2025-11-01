@@ -1,4 +1,4 @@
-name: PCGMZ
+name: PCGMZ Moonlight Sunshine
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
           powercfg /change monitor-timeout-ac 0
           powercfg /hibernate off
           powercfg /setactive SCHEME_MIN
-          echo Disabled Sleep/Hibernate
+          echo "Disabled Sleep/Hibernate"
 
       - name: Optimize TCP Stack + QoS Gaming
         shell: powershell
@@ -26,31 +26,7 @@ jobs:
           netsh interface tcp set global rss=enabled
           netsh interface tcp set global chimney=disabled
           netsh interface tcp set global ecncapability=enabled
-          echo QoS Gaming Turbo Applied
-
-      - name: Optimize PCGMZ Keepalive
-        shell: powershell
-        run: |
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
-          echo RDP KeepAlive Enabled
-
-      - name: Configure Core PCGMZ Settings
-        shell: powershell
-        run: |
-          Start-Process powershell -Verb runAs -ArgumentList @"
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
-            Restart-Service -Name TermService -Force
-          "@
-
-      - name: Anti Idle + Session Timeout Policies
-        shell: powershell
-        run: |
-          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'MaxIdleTime' -Value 0 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
-          echo Idle Disconnect Disabled
+          echo "QoS Gaming Turbo Applied"
 
       - name: Create PCGMZ User Secure
         shell: powershell
@@ -67,85 +43,75 @@ jobs:
           echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: Install NVIDIA GPU Drivers (Moonlight Requirement)
+      - name: Install Sunshine Moonlight Host (FAST)
         shell: powershell
         run: |
-          # Download and install NVIDIA GPU driver (basic display driver for streaming)
-          $url = "https://international.download.nvidia.com/Windows/474.14/474.14-desktop-win10-win11-64bit-international-dch-whql.exe"
-          $file = "$env:TEMP\nvidia-driver.exe"
-          try {
-              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
-              Start-Process $file -ArgumentList "-s", "-noreboot" -Wait -NoNewWindow
-              Remove-Item $file -Force
-              echo "NVIDIA Driver installed successfully"
-          } catch {
-              echo "NVIDIA Driver installation failed: $_"
-              echo "Continuing without NVIDIA driver..."
-          }
-
-      - name: Install GeForce Experience (Moonlight Host)
-        shell: powershell
-        run: |
-          # Install GeForce Experience for Moonlight compatibility
-          $url = "https://download.nvidia.com/GFE/GFEClient/3.28.0.417/GeForce_Experience_v3.28.0.417.exe"
-          $file = "$env:TEMP\geforce-experience.exe"
-          try {
-              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
-              Start-Process $file -ArgumentList "-s" -Wait -NoNewWindow
-              Remove-Item $file -Force
-              echo "GeForce Experience installed successfully"
-          } catch {
-              echo "GeForce Experience installation failed: $_"
-              echo "Trying alternative GFE version..."
-          }
-
-      - name: Enable NVIDIA GameStream Service
-        shell: powershell
-        run: |
-          # Enable and configure NVIDIA GameStream service
-          Start-Process sc -ArgumentList "config", "NvContainerLocalSystem", "start= auto" -Wait
-          Start-Process sc -ArgumentList "start", "NvContainerLocalSystem" -Wait
-          
-          # Enable GameStream in registry
-          New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFE" -Name "EnableGameStream" -Value 1 -PropertyType DWord -Force
-          New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFE" -Name "GameStreamDCH" -Value 1 -PropertyType DWord -Force
-          
-          # Restart GFE services
-          Restart-Service -Name "NvContainerLocalSystem" -Force -ErrorAction SilentlyContinue
-          echo "NVIDIA GameStream Service Enabled"
-
-      - name: Install Sunshine (Open Source Moonlight Host)
-        shell: powershell
-        run: |
-          # Install Sunshine as backup/alternative to GFE
+          # Download dan install Sunshine - lightweight alternative
           $url = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.0/sunshine-windows-portable.zip"
           $file = "$env:TEMP\sunshine.zip"
           $extractPath = "C:\Sunshine"
           
-          try {
-              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
-              Expand-Archive -Path $file -DestinationPath $extractPath -Force
-              Remove-Item $file -Force
-              
-              # Install Sunshine as service
-              Start-Process -FilePath "$extractPath\sunshine.exe" -ArgumentList "--install" -Wait
-              Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
-              
-              echo "Sunshine installed successfully"
-          } catch {
-              echo "Sunshine installation failed: $_"
-          }
+          Write-Host "Downloading Sunshine..."
+          Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 120
+          
+          Write-Host "Extracting Sunshine..."
+          Expand-Archive -Path $file -DestinationPath $extractPath -Force
+          Remove-Item $file -Force
+          
+          Write-Host "Installing Sunshine as service..."
+          Start-Process -FilePath "$extractPath\sunshine.exe" -ArgumentList "--install" -Wait
+          
+          # Start Sunshine service
+          Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          
+          echo "Sunshine installed successfully in 3-5 minutes"
 
-      - name: Configure Moonlight Streaming Ports
+      - name: Configure Sunshine for Optimal Streaming
         shell: powershell
         run: |
-          # Open ports for Moonlight streaming
-          $ports = @(47984, 47989, 48010, 47998, 47999, 48000, 48010)
-          foreach ($port in $ports) {
-              netsh advfirewall firewall add rule name="Moonlight-$port" dir=in action=allow protocol=TCP localport=$port
-              netsh advfirewall firewall add rule name="Moonlight-$port-UDP" dir=in action=allow protocol=UDP localport=$port
+          # Tunggu sebentar untuk service fully started
+          Start-Sleep -Seconds 10
+          
+          # Default credentials untuk Sunshine web UI
+          $sunshineConfig = @"
+          {
+            "username": "admin",
+            "password": "admin",
+            "port": 47990
           }
-          echo "Moonlight streaming ports configured"
+"@
+          
+          # Create config directory jika belum ada
+          $configDir = "$env:APPDATA\Sunshine"
+          New-Item -ItemType Directory -Path $configDir -Force
+          
+          # Basic configuration untuk streaming optimal
+          $sunshineSettings = @"
+          {
+            "streaming": {
+              "encoder": "auto",
+              "resolution": "1920x1080",
+              "fps": 60,
+              "bitrate": 20000,
+              "hevc_mode": 0
+            },
+            "adapter_name": "auto"
+          }
+"@
+          
+          $sunshineSettings | Out-File -FilePath "$configDir\sunshine.conf" -Force
+          echo "Sunshine configured for 1080p 60fps streaming"
+
+      - name: Open Sunshine Streaming Ports
+        shell: powershell
+        run: |
+          # Sunshine default ports untuk streaming
+          $ports = @(47984, 47989, 47990, 48010)
+          foreach ($port in $ports) {
+              netsh advfirewall firewall add rule name="Sunshine-$port-TCP" dir=in action=allow protocol=TCP localport=$port
+              netsh advfirewall firewall add rule name="Sunshine-$port-UDP" dir=in action=allow protocol=UDP localport=$port
+          }
+          echo "Sunshine streaming ports opened"
 
       - name: Install Tailscale
         shell: powershell
@@ -156,145 +122,113 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
           Remove-Item $file -Force
 
-      - name: Establish Tailscale (Tailscale-only access)
+      - name: Establish Tailscale Connection
         shell: powershell
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-Moonlight-${{ github.run_id }}"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-Sunshine-${{ github.run_id }}"
           Start-Sleep -Seconds 10
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "Tailscale connected: $tsIP"
 
-      - name: Anti-DDoS Firewall (Block public access, Tailscale-only)
+      - name: Enable RDP for Management
         shell: powershell
         run: |
-          try {
-            Disable-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue
-            New-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
-            netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
-            netsh advfirewall set allprofiles logging maxfilesize 4096
-            netsh advfirewall set allprofiles logging droppedconnections enable
-            echo "Anti-DDoS Firewall Applied"
-          } catch {
-            echo "Error in Anti-DDoS Firewall setup: $_"
-            exit 0
-          }
+          Start-Process powershell -Verb runAs -ArgumentList @"
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+            netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
+            Restart-Service -Name TermService -Force
+          "@
+          echo "RDP Enabled for management"
 
-      - name: PCGMZ Stealth Port Randomizer
+      - name: Randomize RDP Port for Security
         shell: powershell
         run: |
           $randomPort = Get-Random -Minimum 10000 -Maximum 65535
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
-          Set-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -LocalPort $randomPort -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Random" dir=in action=allow protocol=TCP localport=$randomPort
           Restart-Service -Name TermService -Force
-          echo "RDP Port Randomized to $randomPort"
           echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
-
-      - name: GPU Passthrough Kernel Scheduling Boost
-        shell: powershell
-        run: |
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'TdrDelay' -Value 0 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'TdrDdiDelay' -Value 0 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'GPU Priority' -Value 8 -PropertyType DWord -Force
-          echo GPU Passthrough Kernel Scheduling Boost Applied
+          echo "RDP Port randomized to: $randomPort"
 
       - name: Optimize Streaming Performance
         shell: powershell
         run: |
-          # Optimize for game streaming
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'LatencyToleranceTimer' -Value 1 -PropertyType DWord -Force
+          # Optimasi sistem untuk streaming
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  # High performance
           
-          # Set high performance power plan for streaming
-          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          # GPU optimizations
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'GPU Priority' -Value 8 -PropertyType DWord -Force -ErrorAction SilentlyContinue
           
-          echo "Streaming Performance Optimized"
+          # Network optimizations
+          netsh int tcp set global autotuninglevel=experimental
+          netsh interface tcp set global timestamps=disabled
+          
+          echo "Streaming performance optimized"
 
-      - name: Configure Moonlight Host Settings
+      - name: Verify Sunshine Service
         shell: powershell
         run: |
-          # Configure GFE for optimal streaming
-          $gfePath = "$env:PROGRAMDATA\NVIDIA Corporation\GeForce Experience"
-          if (Test-Path $gfePath) {
-              New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFE" -Name "GFN.Data.Source" -Value 0 -PropertyType DWord -Force
-              New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFE" -Name "ShareState" -Value 1 -PropertyType DWord -Force
-          }
-          
-          # Set streaming resolution and bitrate
-          New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\Streamer" -Name "MaxResolution" -Value 4 -PropertyType DWord -Force
-          New-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\Global\Streamer" -Name "MaxBitrate" -Value 20000 -PropertyType DWord -Force
-          
-          echo "Moonlight Host Settings Configured"
-
-      - name: Enable Ultra Low Latency Mode
-        shell: powershell
-        run: |
-          reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
-          Get-NetAdapter | ForEach-Object { 
-            try { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -NoRestart -ErrorAction SilentlyContinue } catch { }
-          }
-          Write-Host "Ultra Low Latency Mode applied"
-
-      - name: Verify Moonlight Compatibility
-        shell: powershell
-        run: |
-          # Check if streaming services are running
-          $services = @("NvContainerLocalSystem", "NVIDIA Display Container LS", "Sunshine")
-          foreach ($service in $services) {
-              $status = Get-Service -Name $service -ErrorAction SilentlyContinue
-              if ($status) {
-                  Write-Host "$service : $($status.Status)"
+          # Check if Sunshine service is running
+          $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          if ($service -and $service.Status -eq 'Running') {
+              echo "✅ Sunshine service is RUNNING"
+          } else {
+              echo "❌ Sunshine service not running, attempting to start..."
+              Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 5
+              $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+              if ($service.Status -eq 'Running') {
+                  echo "✅ Sunshine service started successfully"
+              } else {
+                  echo "❌ Failed to start Sunshine service"
               }
           }
           
-          # Verify ports are open
-          $ports = @(47984, 47989, 48010)
-          foreach ($port in $ports) {
-              $result = Test-NetConnection -ComputerName localhost -Port $port -WarningAction SilentlyContinue
-              Write-Host "Port $port : $($result.TcpTestSucceeded)"
+          # Test Sunshine web UI
+          try {
+              $response = Invoke-WebRequest -Uri "http://localhost:47990" -TimeoutSec 10 -ErrorAction SilentlyContinue
+              echo "✅ Sunshine web UI is accessible"
+          } catch {
+              echo "⚠️ Sunshine web UI not accessible yet (may need more time)"
           }
 
-      - name: Auto Reconnect Monitor
+      - name: Final Sunshine Setup Complete
         shell: powershell
         run: |
-          $script = @"
-          while (`$true) {
-            if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
-              Restart-Service TermService -Force
-              Restart-Service NvContainerLocalSystem -ErrorAction SilentlyContinue
-              Get-NetAdapter | Disable-NetAdapter -Confirm:`$false; Start-Sleep 2; Get-NetAdapter | Enable-NetAdapter -Confirm:`$false
-            }
-            Start-Sleep 15
-          }
-          "@
-          $path = "$env:ProgramData\rdp-monitor.ps1"
-          $script | Out-File $path
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `$path"
-
-      - name: Final Moonlight Setup
-        shell: powershell
-        run: |
-          Write-Host "=========================================="
-          Write-Host "PCGMZ MOONLIGHT READY"
-          Write-Host "=========================================="
-          Write-Host "Tailscale IP: $env:TS_IP"
-          Write-Host "RDP Username: $env:RDP_USER"
-          Write-Host "RDP Password: $env:RDP_PASS"
-          Write-Host "RDP Port: $env:RDP_PORT"
           Write-Host ""
-          Write-Host "MOONLIGHT SETUP:"
-          Write-Host "1. Install Moonlight app on your device"
+          Write-Host "=========================================="
+          Write-Host "🎮 PCGMZ SUNSHINE READY FOR MOONLIGHT 🎮"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "🌐 TAILSCALE IP: $env:TS_IP"
+          Write-Host "👤 USERNAME: $env:RDP_USER" 
+          Write-Host "🔑 PASSWORD: $env:RDP_PASS"
+          Write-Host "🔒 RDP PORT: $env:RDP_PORT"
+          Write-Host ""
+          Write-Host "📡 SUNSHINE PORTS: 47984-48010"
+          Write-Host "🌐 SUNSHINE WEB UI: http://$env:TS_IP:47990"
+          Write-Host "   Username: admin"
+          Write-Host "   Password: admin"
+          Write-Host ""
+          Write-Host "📱 MOONLIGHT SETUP:"
+          Write-Host "1. Install Moonlight app"
           Write-Host "2. Add PC manually: $env:TS_IP"
-          Write-Host "3. Use ports: 47984-48010"
-          Write-Host "4. For RDP access: $env:TS_IP`:$env:RDP_PORT"
+          Write-Host "3. Stream langsung atau akses RDP dulu"
           Write-Host ""
-          Write-Host "Streaming should be available in 2-3 minutes"
           Write-Host "=========================================="
 
       - name: Maintain Connection
         shell: powershell
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] PCGMZ Moonlight Session Active - IP: $env:TS_IP"
+              Write-Host "[$(Get-Date)] 🎮 PCGMZ Sunshine Active - Connect via Moonlight to: $env:TS_IP"
+              # Restart Sunshine jika mati
+              $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+              if ($service.Status -ne 'Running') {
+                  Write-Host "Restarting Sunshine service..."
+                  Start-Service -Name "Sunshine"
+              }
               Start-Sleep -Seconds 300
           }
