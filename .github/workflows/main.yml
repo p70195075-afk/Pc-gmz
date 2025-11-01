@@ -92,14 +92,8 @@ jobs:
           if ($ruleExists) {
             netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
           }
-          # Get Tailscale interface name
-          $tsInterface = Get-NetAdapter | Where-Object { $_.Name -like "*Tailscale*" -or $_.Description -like "*Tailscale*" } | Select-Object -First 1 -ExpandProperty Name
-          if ($tsInterface) {
-            netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389 interface="$tsInterface"
-          } else {
-            # Fallback: Allow without interface restriction (Tailscale handles security)
-            netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
-          }
+          # Add rule allowing RDP only via Tailscale (Tailscale handles encryption and access control)
+          netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
           # Enable Windows Firewall logging for monitoring
           netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
           netsh advfirewall set allprofiles logging maxfilesize 4096
@@ -161,8 +155,11 @@ jobs:
         run: |
           $randomPort = Get-Random -Minimum 10000 -Maximum 65535
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
-          # Update firewall rules to reflect new port
-          netsh advfirewall firewall set rule name="RDP-Allow" new localport=$randomPort
+          # Update firewall rules to reflect new port (only if rule exists)
+          $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
+          if ($ruleExists) {
+            netsh advfirewall firewall set rule name="RDP-Allow" new localport=$randomPort
+          }
           netsh advfirewall firewall set rule name="Tailscale-RDP-Allow" new localport=$randomPort
           Restart-Service -Name TermService -Force
           echo "RDP Port Randomized to $randomPort"
@@ -211,9 +208,13 @@ jobs:
         shell: powershell
         run: |
           # Enable high-precision timers (requires restart, may not fully apply in runner)
-          bcdedit /set useplatformtick yes
-          bcdedit /set disabledynamictick yes
-          echo High Precision Timers Enabled (restart recommended for full effect)
+          try {
+            bcdedit /set useplatformtick yes
+            bcdedit /set disabledynamictick yes
+            echo High Precision Timers Enabled (restart recommended for full effect)
+          } catch {
+            echo "High Precision Timers: bcdedit failed, continuing without changes"
+          }
 
       - name: GPU Queue Shaving (Optimize GPU command queues for latency)
         shell: powershell
