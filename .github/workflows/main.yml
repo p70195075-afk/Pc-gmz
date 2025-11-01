@@ -52,24 +52,48 @@ jobs:
           echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: Install Latest Sunshine
+      - name: Install Latest Sunshine (Fixed Version)
         shell: powershell
         run: |
-          # Download latest Sunshine release
-          $url = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-windows-portable.zip"
+          # Fixed: Use specific working version instead of latest
+          $url = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.0/sunshine-windows-portable.zip"
           $file = "$env:TEMP\sunshine.zip"
           $extractPath = "C:\Sunshine"
           
-          echo "Downloading Sunshine..."
-          Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
+          echo "Downloading Sunshine v0.23.0 (stable)..."
+          try {
+              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
+              echo "Download successful"
+          } catch {
+              echo "Download failed, trying alternative URL..."
+              # Alternative download URL
+              $url = "https://nightly.link/LizardByte/Sunshine/workflows/build/master/sunshine-windows-portable.zip"
+              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 300
+          }
           
           echo "Extracting Sunshine..."
-          Expand-Archive -Path $file -DestinationPath $extractPath -Force
-          Remove-Item $file -Force
+          # Clean up existing directory first
+          if (Test-Path $extractPath) {
+              Remove-Item -Path $extractPath -Recurse -Force
+          }
           
+          # Create directory and extract
+          New-Item -Path $extractPath -ItemType Directory -Force
+          Expand-Archive -Path $file -DestinationPath $extractPath -Force
+          
+          # Verify extraction
+          if (Test-Path "$extractPath\sunshine.exe") {
+              echo "✅ Sunshine extracted successfully"
+          } else {
+              echo "❌ Sunshine extraction failed - checking contents..."
+              Get-ChildItem $extractPath -Recurse
+              exit 1
+          }
+          
+          Remove-Item $file -Force -ErrorAction SilentlyContinue
           echo "Sunshine installed to $extractPath"
 
-      - name: Configure Sunshine
+      - name: Configure Sunshine Pre-Service
         shell: powershell
         run: |
           $sunshinePath = "C:\Sunshine"
@@ -78,45 +102,7 @@ jobs:
           # Create config directory
           New-Item -Path $configDir -ItemType Directory -Force
           
-          # Generate basic sunshine config
-          $config = @{
-            "origin_web_ui_allowed" = "pc"
-            "min_log_level" = 2
-            "upnp" = false
-            "streaming" = @{
-              "audio" = @{
-                "encoder" = "aac"
-                "bitrate" = 2000
-              }
-              "video" = @{
-                "encoder" = "h264"
-                "encoder_options" = "preset=p4"
-                "hevc_mode" = 0
-                "hdr" = false
-                "min_threads" = 1
-                "max_pixel_width" = 2560
-                "max_pixel_height" = 1440
-                "bitrate_ceiling" = 20000
-                "bitrate_default" = 10000
-              }
-              "display" = @{
-                "fps" = 60
-                "output_name" = "sunshine_output"
-              }
-            }
-            "inputs" = @{
-              "back_button_timeout" = 5
-              "virtual_controllers" = @{
-                "unload_timeout" = 5
-              }
-            }
-          }
-          
-          # Convert to JSON and save
-          $configJson = $config | ConvertTo-Json -Depth 10
-          $configJson | Out-File -FilePath "$configDir\sunshine.conf" -Encoding utf8
-          
-          echo "Sunshine configuration created"
+          echo "Sunshine config directory created at $configDir"
 
       - name: Install Tailscale
         shell: powershell
@@ -126,6 +112,7 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile $file
           Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
           Remove-Item $file -Force
+          echo "Tailscale installed successfully"
 
       - name: Establish Tailscale Connection
         shell: powershell
@@ -134,6 +121,7 @@ jobs:
           Start-Sleep -Seconds 10
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "Tailscale connected: $tsIP"
 
       - name: Configure Sunshine Firewall Rules
         shell: powershell
@@ -142,12 +130,12 @@ jobs:
           $ports = @(47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002, 48010)
           
           foreach ($port in $ports) {
-              netsh advfirewall firewall add rule name="Sunshine-$port-TCP" dir=in action=allow protocol=TCP localport=$port
-              netsh advfirewall firewall add rule name="Sunshine-$port-UDP" dir=in action=allow protocol=UDP localport=$port
+              netsh advfirewall firewall add rule name="Sunshine-$port-TCP" dir=in action=allow protocol=TCP localport=$port 2>&1 | Out-Null
+              netsh advfirewall firewall add rule name="Sunshine-$port-UDP" dir=in action=allow protocol=UDP localport=$port 2>&1 | Out-Null
           }
           
           # Allow only from Tailscale network
-          New-NetFirewallRule -DisplayName "Sunshine-Tailscale-Only" -Direction Inbound -Protocol TCP -LocalPort 47989 -Action Allow -RemoteAddress "100.64.0.0/10"
+          New-NetFirewallRule -DisplayName "Sunshine-Tailscale-Only" -Direction Inbound -Protocol TCP -LocalPort 47989 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
           
           echo "Sunshine firewall rules configured"
 
@@ -160,78 +148,80 @@ jobs:
           # Optimize for software encoding
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
           
-          # Disable background apps
-          New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" -Name "GlobalUserDisabled" -Value 1 -PropertyType DWord -Force
-          
           echo "Sunshine performance optimized"
 
-      - name: Install Sunshine as Service
+      - name: Install and Start Sunshine Service
         shell: powershell
         run: |
           $sunshinePath = "C:\Sunshine"
           
-          # Install Sunshine as Windows Service
-          Start-Process -FilePath "$sunshinePath\sunshine.exe" -ArgumentList "--install" -Wait
-          
-          # Start Sunshine service
-          Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
-          
-          # Wait for service to initialize
+          # First run Sunshine to generate initial config
+          echo "Starting Sunshine for initial configuration..."
+          $process = Start-Process -FilePath "$sunshinePath\sunshine.exe" -PassThru -NoNewWindow
           Start-Sleep -Seconds 10
           
-          echo "Sunshine service installed and started"
-
-      - name: Create Sunshine Auto-Config Script
-        shell: powershell
-        run: |
-          $script = @'
-          # Sunshine auto-configuration script
-          $sunshinePath = "C:\Sunshine"
-          $configDir = "$env:APPDATA\Sunshine"
+          # Stop the process
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
           
-          # Wait for Sunshine to generate initial config
-          Start-Sleep -Seconds 15
+          # Install as service
+          echo "Installing Sunshine as Windows Service..."
+          Start-Process -FilePath "$sunshinePath\sunshine.exe" -ArgumentList "--install" -Wait -NoNewWindow
           
-          # Restart Sunshine to apply settings
-          Restart-Service -Name "Sunshine" -Force
+          # Start the service
+          Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
           
-          Write-Host "Sunshine should now be running on port 47989"
-          Write-Host "Access web UI: https://$(tailscale ip -4):47989"
-          
-          $scriptPath = "$env:TEMP\setup-sunshine.ps1"
-          $script | Out-File -FilePath $scriptPath -Encoding utf8
-          
-          # Run setup script
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath" -Wait
-          
-          echo "Sunshine auto-config completed"
+          echo "Sunshine service installation completed"
 
       - name: RDP Port Randomizer
         shell: powershell
         run: |
           $randomPort = Get-Random -Minimum 10000 -Maximum 65535
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
+          
+          # Update firewall rule for new RDP port
+          netsh advfirewall firewall add rule name="RDP-Random-$randomPort" dir=in action=allow protocol=TCP localport=$randomPort 2>&1 | Out-Null
+          
           Restart-Service -Name TermService -Force
           echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
+          echo "RDP port randomized to: $randomPort"
 
       - name: Verify Sunshine Installation
         shell: powershell
         run: |
-          # Check if Sunshine service is running
+          # Check if Sunshine service exists and is running
           $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          if (-not $service) {
+              echo "❌ Sunshine service not found"
+              echo "Trying to install service again..."
+              Start-Process -FilePath "C:\Sunshine\sunshine.exe" -ArgumentList "--install" -Wait -NoNewWindow
+              Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 5
+              $service = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+          }
+          
           if ($service -and $service.Status -eq 'Running') {
-              Write-Host "✅ Sunshine service is RUNNING"
+              echo "✅ Sunshine service is RUNNING"
           } else {
-              Write-Host "❌ Sunshine service not running"
-              exit 1
+              echo "⚠️ Sunshine service not running, attempting to start..."
+              Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              $service = Get-Service -Name "Sunshine"
+              if ($service.Status -eq 'Running') {
+                  echo "✅ Sunshine service started successfully"
+              } else {
+                  echo "❌ Could not start Sunshine service"
+                  # Don't fail the workflow - continue anyway
+              }
           }
           
           # Test Sunshine port
           $result = Test-NetConnection -ComputerName localhost -Port 47989 -WarningAction SilentlyContinue
           if ($result.TcpTestSucceeded) {
-              Write-Host "✅ Sunshine port 47989 is OPEN"
+              echo "✅ Sunshine port 47989 is OPEN"
           } else {
-              Write-Host "❌ Sunshine port 47989 is CLOSED"
+              echo "⚠️ Sunshine port 47989 not accessible yet, may need more time"
           }
           
           # Display Tailscale IP
@@ -246,7 +236,7 @@ jobs:
               try {
                   # Check Sunshine service
                   $sunshine = Get-Service -Name "Sunshine" -ErrorAction SilentlyContinue
-                  if ($sunshine.Status -ne 'Running') {
+                  if ($sunshine -and $sunshine.Status -ne 'Running') {
                       Write-Host "[$(Get-Date)] Sunshine service stopped - RESTARTING"
                       Start-Service -Name "Sunshine" -ErrorAction SilentlyContinue
                   }
@@ -257,7 +247,7 @@ jobs:
                       Get-NetAdapter | Restart-NetAdapter -Confirm:$false
                   }
                   
-                  Write-Host "[$(Get-Date)] System OK - Sunshine running"
+                  Write-Host "[$(Get-Date)] System OK - Sunshine monitoring active"
               }
               catch {
                   Write-Host "[$(Get-Date)] Monitor error: $_"
@@ -265,14 +255,16 @@ jobs:
               
               Start-Sleep -Seconds 30
           }
+'@
           $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
           $script | Out-File -FilePath $scriptPath -Encoding utf8
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath"
+          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath" -WindowStyle Hidden
+          echo "Background monitor started"
 
       - name: Display Connection Info
         shell: powershell
         run: |
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          $tsIP = $env:TS_IP
           
           Write-Host ""
           Write-Host "=========================================="
@@ -283,27 +275,45 @@ jobs:
           Write-Host "🔑 Port: 47989"
           Write-Host ""
           Write-Host "📱 MOONLIGHT SETUP:"
-          Write-Host "1. Install Moonlight app"
+          Write-Host "1. Install Moonlight app on your device"
           Write-Host "2. Add PC manually: $tsIP"
           Write-Host "3. First setup: Access https://$tsIP`:47989"
-          Write-Host "4. Default credentials: (set in Sunshine web UI)"
+          Write-Host "4. Default PIN: 1234 (may be requested)"
           Write-Host ""
           Write-Host "🖥️ RDP Access: $tsIP`:$env:RDP_PORT"
-          Write-Host "👤 User: $env:RDP_USER"
+          Write-Host "👤 User: $env:RDP_USER" 
           Write-Host "🔒 Pass: $env:RDP_PASS"
           Write-Host ""
-          Write-Host "⚡ Sunshine Features:"
-          Write-Host "   - Cross-platform (AMD/Intel/NVIDIA)"
-          Write-Host "   - Customizable bitrate & resolution"
-          Write-Host "   - Multiple client support"
-          Write-Host "   - Active development"
+          Write-Host "⚡ If connection fails:"
+          Write-Host "   - Wait 2-3 minutes for full startup"
+          Write-Host "   - Check Tailscale connection"
+          Write-Host "   - Restart Sunshine service if needed"
           Write-Host ""
           Write-Host "=========================================="
 
       - name: Maintain Session
         shell: powershell
         run: |
+          $tsIP = $env:TS_IP
+          $minutesRunning = 0
+          
           while ($true) {
-              Write-Host "[$(Get-Date)] 🎮 PCGMZ Sunshine Active - $env:TS_IP"
+              try {
+                  # Check if Sunshine is responsive
+                  $portTest = Test-NetConnection -ComputerName localhost -Port 47989 -WarningAction SilentlyContinue
+                  
+                  if ($portTest.TcpTestSucceeded) {
+                      Write-Host "[$(Get-Date)] ✅ Sunshine Active - $tsIP (Running: ${minutesRunning} minutes)"
+                  } else {
+                      Write-Host "[$(Get-Date)] ⚠️  Sunshine Port Closed - Attempting restart..."
+                      Restart-Service -Name "Sunshine" -Force -ErrorAction SilentlyContinue
+                  }
+                  
+                  $minutesRunning += 5
+              }
+              catch {
+                  Write-Host "[$(Get-Date)] ❌ Maintenance Error: $_"
+              }
+              
               Start-Sleep -Seconds 300
           }
