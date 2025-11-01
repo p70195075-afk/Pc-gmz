@@ -79,7 +79,6 @@ jobs:
             "password": "admin",
             "port": 47990
           }
-"@
           
           # Create config directory jika belum ada
           $configDir = "$env:APPDATA\Sunshine"
@@ -97,7 +96,6 @@ jobs:
             },
             "adapter_name": "auto"
           }
-"@
           
           $sunshineSettings | Out-File -FilePath "$configDir\sunshine.conf" -Force
           echo "Sunshine configured for 1080p 60fps streaming"
