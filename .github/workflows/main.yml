@@ -367,3 +367,8 @@ Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
           Write-Host "Username: $env:RDP_USER"
           Write-Host "Password: $env:RDP_PASS"
           Write-Host "--------------------------------"
+          Write-Host "🌐 Sunshine Web UI (Tailscale-only): http://$env:TS_IP:47990"
+          Write-Host "🎮 Moonlight Connect IP (Tailscale-only): $env:TS_IP"
+          Write-Host "--------------------------------"
+          Write-Host "Use Moonlight APK → Add PC → IP: $env:TS_IP → Pair. Enter PIN in Sunshine WebUI when prompted."
+          Write-Host
