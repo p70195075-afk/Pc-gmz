@@ -88,21 +88,15 @@ jobs:
         shell: powershell
         run: |
           try {
-            # Check if RDP-Allow rule exists and disable it if it does
-            $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
-            if ($ruleExists) {
-              netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
-            }
-            # Check if Tailscale-RDP-Allow rule exists before adding
-            $tsRuleExists = netsh advfirewall firewall show rule name="Tailscale-RDP-Allow" 2>$null | Select-String "Tailscale-RDP-Allow"
-            if (-not $tsRuleExists) {
-              netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
-            }
-            # Enable Windows Firewall logging for monitoring
+            # Disable default RDP firewall rules to block public access
+            Disable-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue
+            # Allow RDP only from Tailscale CGNAT subnet (100.64.0.0/10) for full Tailscale-only access
+            New-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+            # Enable Windows Firewall logging for monitoring dropped connections
             netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
             netsh advfirewall set allprofiles logging maxfilesize 4096
             netsh advfirewall set allprofiles logging droppedconnections enable
-            echo Anti-DDoS Firewall Applied (Tailscale-only access)
+            echo "Anti-DDoS Firewall Applied: RDP blocked from public, allowed only via Tailscale (100.64.0.0/10)"
           } catch {
             echo "Error in Anti-DDoS Firewall setup: $_"
             exit 0  # Continue workflow even if firewall setup fails
@@ -111,29 +105,39 @@ jobs:
       - name: Brute-Force Autoblock (Monitor and ban failed RDP attempts)
         shell: powershell
         run: |
-          # Enable RDP security auditing
-          auditpol /set /subcategory:"Logon/Logoff" /success:enable /failure:enable
-          # Script to monitor event logs and block IPs with excessive failures
-          $script = @"
-          $failedAttempts = @{}
-          while ($true) {
-            $events = Get-WinEvent -FilterHashtable @{LogName='Security'; ID=4625; StartTime=(Get-Date).AddMinutes(-1)} -ErrorAction SilentlyContinue
-            foreach ($event in $events) {
-              $ip = $event.Properties[19].Value  # Assuming IP is in property 19 for RDP failures
-              if ($ip) {
-                $failedAttempts[$ip]++
-                if ($failedAttempts[$ip] -gt 5) {  # Ban after 5 failures
-                  netsh advfirewall firewall add rule name="Block-$ip" dir=in action=block remoteip=$ip
-                  Write-Host "Blocked IP: $ip for brute-force attempts"
+          try {
+            # Enable RDP security auditing
+            auditpol /set /subcategory:"Logon/Logoff" /success:enable /failure:enable
+            # Script to monitor event logs and block IPs with excessive failures
+            $script = @"
+            try {
+              `$failedAttempts = @{}
+              while (`$true) {
+                `$events = Get-WinEvent -FilterHashtable @{LogName='Security'; ID=4625; StartTime=(Get-Date).AddMinutes(-1)} -ErrorAction SilentlyContinue
+                foreach (`$event in `$events) {
+                  `$ip = `$event.Properties[19].Value
+                  if (`$ip -and `$ip -notmatch '^100\.64\.') {  # Skip Tailscale IPs
+                    `$failedAttempts[`$ip]++
+                    if (`$failedAttempts[`$ip] -gt 5) {
+                      New-NetFirewallRule -DisplayName "Block-`$ip" -Direction Inbound -Action Block -RemoteAddress `$ip -ErrorAction SilentlyContinue
+                      Write-Host "Blocked IP: `$ip for brute-force attempts"
+                    }
+                  }
                 }
+                Start-Sleep 60
               }
+            } catch {
+              Write-Host "Error in brute-force monitor: `$_"
             }
-            Start-Sleep 60
+            "@
+            $path = "$env:ProgramData\\brute-force-monitor.ps1"
+            $script | Out-File $path
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
+            echo "Brute-Force Autoblock Enabled (monitors and bans IPs with >5 failed RDP attempts, skips Tailscale IPs)"
+          } catch {
+            echo "Error in Brute-Force Autoblock setup: $_"
+            exit 0  # Continue workflow even if setup fails
           }
-          "@
-          $path = "$env:ProgramData\\brute-force-monitor.ps1"
-          $script | Out-File $path
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
 
       - name: Anti-Portscan Honeypot (Detect and mislead port scanners)
         shell: powershell
@@ -163,12 +167,8 @@ jobs:
         run: |
           $randomPort = Get-Random -Minimum 10000 -Maximum 65535
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
-          # Update firewall rules to reflect new port (only if rule exists)
-          $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
-          if ($ruleExists) {
-            netsh advfirewall firewall set rule name="RDP-Allow" new localport=$randomPort
-          }
-          netsh advfirewall firewall set rule name="Tailscale-RDP-Allow" new localport=$randomPort
+          # Update firewall rules to reflect new port
+          Set-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -LocalPort $randomPort -ErrorAction SilentlyContinue
           Restart-Service -Name TermService -Force
           echo "RDP Port Randomized to $randomPort"
           echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
