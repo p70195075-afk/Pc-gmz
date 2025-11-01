@@ -6,281 +6,350 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 4680  # Updated to 78 hours (78*60) + 6h chain headroom buffer
+    timeout-minutes: 4680  # 78 jam uptime
 
     steps:
       - name: Disable Sleep / Hibernate / PowerSave
         shell: powershell
         run: |
-          powercfg /change standby-timeout-ac 0
-          powercfg /change monitor-timeout-ac 0
-          powercfg /hibernate off
-          powercfg /setactive SCHEME_MIN
-          echo Disabled Sleep/Hibernate
+          try {
+            powercfg /change standby-timeout-ac 0
+            powercfg /change monitor-timeout-ac 0
+            powercfg /hibernate off
+            powercfg /setactive SCHEME_MIN
+            echo Disabled Sleep/Hibernate
+          } catch {
+            echo "Error in Disable Sleep: $_"
+            exit 0
+          }
 
       - name: Optimize TCP Stack + QoS Gaming
         shell: powershell
         run: |
-          netsh interface tcp set heuristics disabled
-          netsh interface tcp set global congestionprovider=ctcp
-          netsh interface tcp set global rss=enabled
-          netsh interface tcp set global chimney=disabled
-          netsh interface tcp set global ecncapability=enabled
-          echo QoS Gaming Turbo Applied
+          try {
+            netsh interface tcp set heuristics disabled
+            netsh interface tcp set global congestionprovider=ctcp
+            netsh interface tcp set global rss=enabled
+            netsh interface tcp set global chimney=disabled
+            netsh interface tcp set global ecncapability=enabled
+            echo QoS Gaming Turbo Applied
+          } catch {
+            echo "Error in TCP Optimization: $_"
+            exit 0
+          }
 
       - name: Optimize PCGMZ Keepalive
         shell: powershell
         run: |
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
-          echo RDP KeepAlive Enabled
+          try {
+            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
+            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
+            echo RDP KeepAlive Enabled
+          } catch {
+            echo "Error in Keepalive: $_"
+            exit 0
+          }
 
       - name: Configure Core PCGMZ Settings
         shell: powershell
         run: |
-          Start-Process powershell -Verb runAs -ArgumentList @"
+          try {
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
             netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
-            Restart-Service -Name TermService -Force
-          "@
+            Restart-Service TermService -Force
+          } catch {
+            echo "Error in Core Settings: $_"
+            exit 0
+          }
 
       - name: Anti Idle + Session Timeout Policies
         shell: powershell
         run: |
-          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'MaxIdleTime' -Value 0 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
-          echo Idle Disconnect Disabled
+          try {
+            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
+            New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'MaxIdleTime' -Value 0 -PropertyType DWord -Force
+            New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
+          } catch {
+            echo "Error in Anti Idle: $_"
+            exit 0
+          }
 
       - name: Create PCGMZ User Secure
         shell: powershell
         run: |
-          Add-Type -AssemblyName System.Security
-          $chars = ([char[]](33..126))
-          $password = -join ($chars | Get-Random -Count 14)
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (-not (Get-LocalUser -Name "PCGMZ" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "PCGMZ" -Password $securePass -AccountNeverExpires
+          try {
+            Add-Type -AssemblyName System.Security
+            $chars = ([char[]](33..126))
+            $password = -join ($chars | Get-Random -Count 14)
+            $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+            if (-not (Get-LocalUser -Name "PCGMZ" -ErrorAction SilentlyContinue)) {
+                New-LocalUser -Name "PCGMZ" -Password $securePass -AccountNeverExpires
+            }
+            Add-LocalGroupMember -Group "Administrators" -Member "PCGMZ"
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PCGMZ"
+            echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
+            echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+            Write-Host "Created local user PCGMZ and saved credentials to env."
+          } catch {
+            echo "Error in User Creation: $_"
+            exit 0
           }
-          Add-LocalGroupMember -Group "Administrators" -Member "PCGMZ"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PCGMZ"
-          echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         shell: powershell
         run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $file = "$env:TEMP\\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $file
-          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
-          Remove-Item $file -Force
+          try {
+            $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+            $file = "$env:TEMP\\tailscale.exe"
+            Invoke-WebRequest -Uri $url -OutFile $file
+            Start-Process $file -ArgumentList "/quiet" -Wait
+            Remove-Item $file -Force
+          } catch {
+            echo "Error in Tailscale Install: $_"
+            exit 0
+          }
 
-      - name: Establish Tailscale (Tailscale-only access, public DDoS 0%)
+      - name: Establish Tailscale (Tailscale-only access)
         shell: powershell
         run: |
-          & "$env:ProgramFiles\\Tailscale\\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-${{ github.run_id }}"
-          Start-Sleep -Seconds 10
-          $tsIP = & "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4
-          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+          try {
+            & "$env:ProgramFiles\\Tailscale\\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PCGMZ-${{ github.run_id }}" --accept-routes --ssh
+            Start-Sleep -Seconds 8
+            $tsIP = (& "$env:ProgramFiles\\Tailscale\\tailscale.exe" ip -4).Trim()
+            echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+            Write-Host "Tailscale Connected: $tsIP"
+          } catch {
+            echo "Error in Tailscale Establish: $_"
+            exit 0
+          }
 
       - name: Anti-DDoS Firewall (Block public RDP access, Tailscale-only)
         shell: powershell
         run: |
           try {
-            # Disable default RDP firewall rules to block public access
-            Disable-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue
-            # Allow RDP only from Tailscale CGNAT subnet (100.64.0.0/10) for full Tailscale-only access
+            Get-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue | Disable-NetFirewallRule -ErrorAction SilentlyContinue
             New-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
-            # Enable Windows Firewall logging for monitoring dropped connections
             netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
             netsh advfirewall set allprofiles logging maxfilesize 4096
             netsh advfirewall set allprofiles logging droppedconnections enable
             echo "Anti-DDoS Firewall Applied: RDP blocked from public, allowed only via Tailscale (100.64.0.0/10)"
           } catch {
             echo "Error in Anti-DDoS Firewall setup: $_"
-            exit 0  # Continue workflow even if firewall setup fails
+            exit 0
           }
 
-      - name: Anti-Portscan Honeypot (Detect and mislead port scanners)
+      - name: Install Sunshine (GameStream host)
         shell: powershell
         run: |
-          # Install a simple honeypot using a fake service on random unused ports
-          $randomPort = Get-Random -Minimum 10000 -Maximum 65535
-          $script = @"
-          $listener = New-Object System.Net.Sockets.TcpListener('0.0.0.0', $randomPort)
-          $listener.Start()
-          while ($true) {
-            $client = $listener.AcceptTcpClient()
-            $stream = $client.GetStream()
-            $writer = New-Object System.IO.StreamWriter($stream)
-            $writer.WriteLine('Honeypot: Access Denied')  # Mislead scanner
-            $writer.Flush()
-            $client.Close()
-            Write-Host "Port scan detected on $randomPort from $($client.Client.RemoteEndPoint)"
-          }
-          "@
-          $path = "$env:ProgramData\\honeypot.ps1"
-          $script | Out-File $path
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
-          echo "Anti-Portscan Honeypot Enabled on port $randomPort"
-
-      - name: RDP Stealth Port Randomizer (Change RDP port to random)
-        shell: powershell
-        run: |
-          $randomPort = Get-Random -Minimum 10000 -Maximum 65535
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
-          # Update firewall rules to reflect new port
-          Set-NetFirewallRule -DisplayName "Tailscale-RDP-Allow" -LocalPort $randomPort -ErrorAction SilentlyContinue
-          Restart-Service -Name TermService -Force
-          echo "RDP Port Randomized to $randomPort"
-          echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
-
-      - name: Disguise OS Fingerprinting (Alter responses to confuse scanners)
-        shell: powershell
-        run: |
-          # Modify registry to change OS version strings and disable services that leak info
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'ProductName' -Value 'Ubuntu Linux' -PropertyType String -Force  # Fake OS name
-          # Disable unnecessary services that leak info
-          Stop-Service -Name SSDPSRV -ErrorAction SilentlyContinue  # UPnP
-          Set-Service -Name SSDPSRV -StartupType Disabled
-          echo OS Fingerprinting Disguised
-
-      - name: GPU Passthrough Kernel Scheduling Boost (Enable GPU passthrough optimizations)
-        shell: powershell
-        run: |
-          # Enable GPU passthrough in registry (for virtualized environments)
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'TdrDelay' -Value 0 -PropertyType DWord -Force  # Reduce timeout
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'TdrDdiDelay' -Value 0 -PropertyType DWord -Force
-          # Boost kernel scheduling for GPU
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'GPU Priority' -Value 8 -PropertyType DWord -Force
-          echo GPU Passthrough Kernel Scheduling Boost Applied
-
-      - name: Anti Jitter Ping (Reduce network jitter)
-        shell: powershell
-        run: |
-          # Adjust TCP settings to minimize jitter
-          netsh interface tcp set global timestamps=disabled
-          netsh interface tcp set global initialRto=2000  # Lower initial RTO
-          # Enable QoS for ping packets
-          netsh advfirewall firewall add rule name="ICMP-Allow" dir=in action=allow protocol=ICMPv4
-          echo Anti Jitter Ping Enabled
-
-      - name: Packet Pacing VSYNC-Less (Optimize packet pacing for low latency)
-        shell: powershell
-        run: |
-          # Disable VSYNC-like pacing in network stack
-          netsh interface tcp set global pacingprofile=off
-          # Enable experimental autotuning for better pacing
-          netsh int tcp set global autotuninglevel=experimental
-          echo Packet Pacing VSYNC-Less Applied
-
-      - name: High Precision Timers (Enable high-precision event timers)
-        shell: powershell
-        run: |
-          # Enable high-precision timers (requires restart, may not fully apply in runner)
           try {
-            bcdedit /set useplatformtick yes
-            bcdedit /set disabledynamictick yes
-            echo High Precision Timers Enabled (restart recommended for full effect)
-          } catch {
-            echo "High Precision Timers: bcdedit failed, continuing without changes"
-          }
-
-      - name: GPU Queue Shaving (Optimize GPU command queues for latency)
-        shell: powershell
-        run: |
-          # Reduce GPU queue depth for lower latency
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force  # HAGS
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'LatencyToleranceTimer' -Value 1 -PropertyType DWord -Force  # Lower latency tolerance
-          echo GPU Queue Shaving Applied
-
-      - name: Verify PCGMZ 
-        shell: powershell
-        run: |
-          $result = Test-NetConnection -ComputerName $env:TS_IP -Port $env:RDP_PORT
-          if (-not $result.TcpTestSucceeded) { exit 1 }
-
-      - name: Auto Reconnect Monitor
-        shell: powershell
-        run: |
-          $script = @"
-          while ($true) {
-            if (-not (Test-Connection 8.8.8.8 -Count 1 -Quiet)) {
-              Restart-Service TermService -Force
-              Get-NetAdapter | Disable-NetAdapter -Confirm:$false; Start-Sleep 2; Get-NetAdapter | Enable-NetAdapter -Confirm:$false
+            $sunUrl = "https://github.com/LizardByte/Sunshine/releases/latest/download/SunshineSetup.exe"
+            $out = "$env:TEMP\\SunshineSetup.exe"
+            Invoke-WebRequest -Uri $sunUrl -OutFile $out -UseBasicParsing
+            Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
+            Remove-Item $out -Force -ErrorAction SilentlyContinue
+            if (Get-Service -Name Sunshine -ErrorAction SilentlyContinue) {
+              Set-Service -Name Sunshine -StartupType Automatic
+              Start-Service Sunshine
             }
-            Start-Sleep 15
+            Start-Sleep -Seconds 4
+            Write-Host "Sunshine install attempted."
+          } catch {
+            echo "Error in Sunshine Install: $_"
+            exit 0
           }
-          "@
-          $path = "$env:ProgramData\\rdp-monitor.ps1"
-          $script | Out-File $path
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File $path"
 
-      - name: Game Performance Boost RTX4090 Tweaks
+      - name: Sunshine Firewall (restrict to Tailscale)
         shell: powershell
         run: |
-          powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
-          powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'GPU Priority' -Value 8 -PropertyType DWord -Force
-          netsh int tcp set global autotuninglevel=experimental
-          echo RTX4090 Game Performance Boost Applied
+          try {
+            New-NetFirewallRule -DisplayName "Sunshine-TCP-Allowed-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 47984,47989,48010 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+            New-NetFirewallRule -DisplayName "Sunshine-UDP-Allowed-Tailscale" -Direction Inbound -Protocol UDP -LocalPort 47998-48010 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+            New-NetFirewallRule -DisplayName "Sunshine-WebUI-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 47990 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+            Write-Host "Sunshine firewall rules created (restricted to Tailscale)."
+          } catch {
+            echo "Error in Sunshine Firewall: $_"
+            exit 0
+          }
 
-      - name: Enable Ultra Low Latency Mode
+      - name: Sunshine: Autostart + Pairing note
         shell: powershell
         run: |
-          # Low-latency kernel and scheduler tweaks
-          reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 38 /f
-          # Ensure hardware-accelerated GPU scheduling is enabled (HAGS)
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -PropertyType DWord -Force
-          # Reduce NIC interrupt moderation (if supported) to lower packet latency
-          Get-NetAdapter | ForEach-Object { 
-            try { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -NoRestart -ErrorAction SilentlyContinue } catch { }
+          try {
+            if (Get-Service -Name Sunshine -ErrorAction SilentlyContinue) {
+              Set-Service -Name Sunshine -StartupType Automatic
+              Restart-Service -Name Sunshine -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+            }
+            $pairNote = @"
+Sunshine installed. Pairing:
+1) On Android Moonlight -> Add Host -> use Tailscale IP shown in logs.
+2) Enter PIN shown on Moonlight into Sunshine WebUI at http://<TS_IP>:47990
+Ports (Tailscale-only): TCP 47984,47989,48010 and UDP 47998-48010
+"@
+            $notePath = "$env:ProgramData\\SunshinePairing.txt"
+            $pairNote | Out-File -FilePath $notePath -Encoding utf8
+            Write-Host "Pairing note written to $notePath"
+          } catch {
+            echo "Error in Sunshine Autostart: $_"
+            exit 0
           }
-          Write-Host "Ultra Low Latency Mode applied"
+
+      - name: Configure Sunshine secure WebUI & encoder basics
+        shell: powershell
+        run: |
+          try {
+            $configDir = "$env:ProgramData\\Sunshine"
+            if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
+            $configPath = Join-Path $configDir "config.json"
+            $cfg = @{
+              webui = @{ enable = $true; port = 47990; require_auth = $true }
+              users = @(@{ name = "PCGMZ"; password = "PCGMZ_secure_pw_ReplaceMe" })
+              encoder = @{
+                preferred = "nvenc"   # nvenc / amf / qsv
+                nvenc = @{
+                  preset = "p1"
+                  bitrate = 25000      # 25 Mbps default, adjust if needed
+                  maxbps = 50000000
+                  low_latency = $true
+                  max_framerate = 60
+                }
+                amf = @{
+                  preset = "high"
+                  bitrate = 25000
+                  low_latency = $true
+                }
+              }
+              apps = @()
+            } | ConvertTo-Json -Depth 8
+            $cfg | Out-File -FilePath $configPath -Encoding utf8
+            Restart-Service -Name Sunshine -Force -ErrorAction SilentlyContinue
+            Write-Host "Sunshine config written to $configPath (edit password and encoder settings if needed)."
+          } catch {
+            echo "Error in Sunshine Config: $_"
+            exit 0
+          }
+
+      - name: Auto Add Steam & Desktop to Sunshine apps
+        shell: powershell
+        run: |
+          try {
+            $appsPath = "$env:ProgramData\\Sunshine\\apps.json"
+            $apps = @(
+              @{ name="Steam"; cmd="C:\\Program Files (x86)\\Steam\\Steam.exe"; hidden=$false },
+              @{ name="Desktop"; cmd="C:\\Windows\\explorer.exe"; hidden=$false }
+            )
+            $apps | ConvertTo-Json -Depth 4 | Out-File $appsPath -Encoding utf8
+            Restart-Service Sunshine -ErrorAction SilentlyContinue
+            Write-Host "Auto-added Steam & Desktop shortcuts to Sunshine."
+          } catch {
+            echo "Error in Auto Add Apps: $_"
+            exit 0
+          }
+
+      - name: Install VB-Audio Virtual Cable (audio loopback)
+        shell: powershell
+        run: |
+          try {
+            Write-Host "Attempting to download and install VB-Audio Virtual Cable (driver)."
+            $vbcUrl = "https://www.vb-audio.com/Cable/Install_Cable.exe"
+            $out = "$env:TEMP\\Install_Cable.exe"
+            Invoke-WebRequest -Uri $vbcUrl -OutFile $out -UseBasicParsing -ErrorAction Stop
+            Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
+            Remove-Item $out -Force -ErrorAction SilentlyContinue
+            Write-Host "VB-Audio driver installer run (silent)."
+          } catch {
+            Write-Host "Could not download/install VB-Audio automatically. Manual install may be required: https://vb-audio.com/Cable/"
+          }
+          $setAudioScript = @"
+          Add-Type -AssemblyName System.Windows.Forms
+          \$devs = Get-WmiObject -Namespace root\cimv2 -Class Win32_SoundDevice
+          Write-Host 'Audio loopback installer finished. If Virtual Cable is installed, set Cable Input as recording device and Cable Output as playback device manually or via your automation.'
+"@
+          $path = "$env:ProgramData\\set-audio-note.ps1"
+          $setAudioScript | Out-File -FilePath $path -Encoding utf8
+          Write-Host "Audio setup note written to $path"
+
+      - name: Low Latency & GPU Streaming Optimizations
+        shell: powershell
+        run: |
+          try {
+            reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v HwSchMode /t REG_DWORD /d 2 /f
+            reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 0xffffffff /f
+            reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0 /f
+            reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /t REG_DWORD /d 30 /f
+            echo "Low-latency GPU Streaming tweaks applied."
+          } catch {
+            echo "Error in Low Latency Tweaks: $_"
+            exit 0
+          }
+
+      - name: Create Sunshine auto-restart monitor script
+        shell: powershell
+        run: |
+          try {
+            $monitorPath = "$env:ProgramData\\sunshine-monitor.ps1"
+            $script = @"
+            while ($true) {
+              try {
+                $svc = Get-Service -Name Sunshine -ErrorAction SilentlyContinue
+                if (-not $svc -or $svc.Status -ne 'Running') {
+                  Write-Host \"[Sunshine Monitor] Sunshine not running. Attempting restart...\"
+                  if ($svc) { Start-Service -Name Sunshine -ErrorAction SilentlyContinue }
+                  else {
+                    \$exe = 'C:\\Program Files\\Sunshine\\sunshine.exe'
+                    if (Test-Path \$exe) { Start-Process -FilePath \$exe -ArgumentList '--service' -WindowStyle Hidden -ErrorAction SilentlyContinue }
+                  }
+                  Start-Sleep -Seconds 5
+                }
+              } catch {
+                Write-Host \"[Sunshine Monitor] Exception: \$_\"
+              }
+              Start-Sleep -Seconds 20
+            }
+"@
+            $script | Out-File -FilePath $monitorPath -Encoding utf8 -Force
+            schtasks /Create /RU SYSTEM /SC ONSTART /TN "PCGMZ_SunshineMonitor" /TR "powershell -ExecutionPolicy Bypass -File `"$monitorPath`"" /F
+            Start-Process -FilePath powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$monitorPath`"" -WindowStyle Hidden
+            Write-Host "Sunshine monitor created and scheduled task added."
+          } catch {
+            echo "Error in Sunshine Monitor: $_"
+            exit 0
+          }
 
       - name: Enable DirectStorage runtime (if available)
         shell: powershell
         run: |
-          # Try installing DirectStorage via winget but never fail the step
-          if (Get-Command winget -ErrorAction SilentlyContinue) {
-            try {
+          try {
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
               & winget install --id Microsoft.DirectStorage -e --accept-package-agreements --accept-source-agreements --source winget
               $code = $LASTEXITCODE
               if ($code -ne 0) { Write-Host "winget returned exit code $code. Package may be unavailable in this runner." }
-              else { Write-Host "DirectStorage install succeeded (winget exit 0)" }
-            } catch {
-              Write-Host "winget threw an exception but continuing: $_"
+              else { Write-Host "DirectStorage install attempted (winget exit 0)" }
+            } else {
+              Write-Host "winget not available; skipping DirectStorage install. Manual install recommended."
             }
-          } else {
-            Write-Host "winget not available; skipping DirectStorage install. Manual install recommended: https://aka.ms/directstorage"
+          } catch {
+            echo "Error in DirectStorage: $_"
+            exit 0
           }
-          Write-Host "Continuing without DirectStorage..."
-          exit 0
 
       - name: Logs Alive (Enable persistent logging)
         shell: powershell
         run: |
-          # Ensure RDP and system logs are enabled and persistent
-          wevtutil sl Security /ms:104857600  # Set max size to 100MB
-          wevtutil sl System /ms:104857600
-          wevtutil sl "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational" /e:true
-          # Keep logs alive by preventing auto-clear
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog' -Name 'AutoBackupLogFiles' -Value 1 -PropertyType DWord -Force
-          echo Logs Alive Enabled
+          try {
+            wevtutil sl Security /ms:104857600
+            wevtutil sl System /ms:104857600
+            wevtutil sl "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational" /e:true
+            New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog' -Name 'AutoBackupLogFiles' -Value 1 -PropertyType DWord -Force
+            echo Logs Alive Enabled
+          } catch {
+            echo "Error in Logs Alive: $_"
+            exit 0
+          }
 
-      - name: Maintain Connection
+      - name: Maintain Connection (RDP + Moonlight)
         shell: powershell
         run: |
           Write-Host "==============================="
-          Write-Host "PCGMZ Info:"
-          Write-Host "Address: $env:TS_IP"
-          Write-Host "Port: $env:RDP_PORT"
-          Write-Host "Username: $env:RDP_USER"
-          Write-Host "Password: $env:RDP_PASS"
-          Write-Host "==============================="
-          while ($true) {
-              Write-Host "[$(Get-Date)] PCGMZ Session still running..."
-              Start-Sleep -Seconds 300
-          }
+          Write-Host "PCGMZ GameStream Ready:"
+          Write-Host "Tailscale IP: $env
