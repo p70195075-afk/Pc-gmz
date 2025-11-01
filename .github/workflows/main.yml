@@ -106,8 +106,12 @@ jobs:
         shell: powershell
         run: |
           try {
-            # Enable RDP security auditing
-            auditpol /set /subcategory:"Logon/Logoff" /success:enable /failure:enable
+            # Enable RDP security auditing (may fail in some environments, but continue)
+            try {
+              auditpol /set /subcategory:"Logon/Logoff" /success:enable /failure:enable
+            } catch {
+              echo "auditpol failed: $_ (continuing without auditing)"
+            }
             # Script to monitor event logs and block IPs with excessive failures
             $script = @"
             try {
