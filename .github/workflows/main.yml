@@ -1,4 +1,4 @@
-name: PCGMZ
+name: PCGMZ-Moonlight-Ultra-Audio
 
 on:
   workflow_dispatch:
@@ -15,131 +15,222 @@ jobs:
           powercfg /change standby-timeout-ac 0
           powercfg /change monitor-timeout-ac 0
           powercfg /hibernate off
-          powercfg /setactive SCHEME_MIN
-          echo "✅ Power save disabled"
+          Write-Host "✅ Power management disabled"
 
       - name: Optimize TCP Stack + QoS Gaming
         shell: powershell
         run: |
-          netsh interface tcp set heuristics disabled
-          netsh interface tcp set global autotuninglevel=normal
-          netsh interface tcp set global rss=enabled
-          netsh interface tcp set global chimney=disabled
-          netsh interface tcp set global ecncapability=enabled
-          echo "✅ TCP QoS Gaming Optimized"
+          netsh int tcp set heuristics disabled
+          netsh int tcp set global autotuninglevel=normal
+          netsh int tcp set global rss=enabled
+          netsh int tcp set global chimney=disabled
+          netsh int tcp set global ecncapability=enabled
+          netsh int tcp set global timestamps=disabled
+          Write-Host "✅ TCP Stack optimized"
 
-      - name: Optimize Keepalive
+      - name: KeepAlive & Anti Idle
         shell: powershell
         run: |
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'KeepAliveEnable' -Value 1 -PropertyType DWord -Force
           New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 30000 -PropertyType DWord -Force
-          echo "✅ RDP KeepAlive Enabled"
+          reg add "HKLM\Software\Policies\Microsoft\Windows NT\Terminal Services" /v MaxIdleTime /t REG_DWORD /d 0 /f
+          reg add "HKLM\Software\Policies\Microsoft\Windows NT\Terminal Services" /v MaxDisconnectionTime /t REG_DWORD /d 0 /f
+          Write-Host "✅ KeepAlive & Anti Idle applied"
 
-      - name: Configure Core RDP
-        shell: powershell
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Restart-Service TermService -Force
-          echo "✅ RDP Enabled"
-
-      - name: Anti Idle + Timeout
-        shell: powershell
-        run: |
-          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'MaxIdleTime' -Value 0 -PropertyType DWord -Force
-          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fResetBroken' -Value 1 -PropertyType DWord -Force
-          echo "✅ Anti Idle Activated"
-
-      - name: Create RDP User
+      - name: Create secure local user PCGMZ
         shell: powershell
         run: |
           $chars = ([char[]](33..126))
           $password = -join ($chars | Get-Random -Count 14)
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
           if (-not (Get-LocalUser -Name "PCGMZ" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "PCGMZ" -Password $securePass -AccountNeverExpires
+            New-LocalUser -Name "PCGMZ" -Password $secure -AccountNeverExpires -PasswordNeverExpires
           }
           Add-LocalGroupMember -Group "Administrators" -Member "PCGMZ"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PCGMZ"
           echo "RDP_USER=PCGMZ" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
-          echo "✅ Created RDP user: PCGMZ"
+          Write-Host "✅ Local user PCGMZ created"
 
       - name: Install Tailscale
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile tailscale.exe
-          Start-Process tailscale.exe -ArgumentList "/quiet" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname "PCGMZ-${{ github.run_id }}" --ssh
-          $tsip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
-          echo "TS_IP=$tsip" >> $env:GITHUB_ENV
-          echo "✅ Tailscale connected: $tsip"
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+          $out = "$env:TEMP\tailscale.exe"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Start-Process -FilePath $out -ArgumentList "/quiet" -Wait
+          Remove-Item $out -Force -ErrorAction SilentlyContinue
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname "PCGMZ-Audio-${{ github.run_id }}" --ssh
+          Start-Sleep -Seconds 6
+          $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale up: $ip"
 
-      - name: Firewall Restrict (Tailscale Only)
+      - name: Firewall - restrict to Tailscale only
         shell: powershell
         run: |
-          Get-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue | Disable-NetFirewallRule
-          New-NetFirewallRule -DisplayName "Allow-RDP-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress "100.64.0.0/10"
-          echo "✅ Firewall secured to Tailscale only"
+          Get-NetFirewallRule -DisplayName "Remote Desktop*" -ErrorAction SilentlyContinue | Disable-NetFirewallRule -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "Allow-RDP-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+          Write-Host "✅ Firewall restricted to Tailscale subnet"
 
-      - name: Install Sunshine (Moonlight host)
+      - name: Install VB-Cable (VB-Audio) for audio loopback
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/LizardByte/Sunshine/releases/latest/download/SunshineSetup.exe" -OutFile SunshineSetup.exe
-          Start-Process SunshineSetup.exe -ArgumentList "/silent" -Wait
-          Set-Service Sunshine -StartupType Automatic
-          Start-Service Sunshine
-          echo "✅ Sunshine Installed"
+          Write-Host "Attempting to install VB-Cable (virtual audio cable) silently..."
+          $vurl = "https://vb-audio.com/Cable/Install_Cable.exe"
+          $vout = "$env:TEMP\Install_Cable.exe"
+          try {
+            Invoke-WebRequest -Uri $vurl -OutFile $vout -UseBasicParsing -ErrorAction Stop
+            Start-Process -FilePath $vout -ArgumentList "/S" -Wait -NoNewWindow
+            Remove-Item $vout -Force -ErrorAction SilentlyContinue
+            Write-Host "✅ VB-Cable installer executed (silent)."
+          } catch {
+            Write-Host "⚠ VB-Cable download/install failed: $_"
+          }
 
-      - name: Configure Sunshine Firewall
+      - name: Install NirCmd (used to set default audio device if available)
         shell: powershell
         run: |
-          New-NetFirewallRule -DisplayName "Sunshine TCP" -Direction Inbound -Protocol TCP -LocalPort 47984,47989,47990,48010 -Action Allow -RemoteAddress "100.64.0.0/10"
-          New-NetFirewallRule -DisplayName "Sunshine UDP" -Direction Inbound -Protocol UDP -LocalPort 47998-48010 -Action Allow -RemoteAddress "100.64.0.0/10"
-          echo "✅ Sunshine Firewall Configured"
+          Write-Host "Downloading NirCmd (used to set default audio device if available)..."
+          $nurl = "https://www.nirsoft.net/utils/nircmd-x64.zip"
+          $nout = "$env:TEMP\nircmd.zip"
+          $ndest = "$env:TEMP\nircmd"
+          try {
+            Invoke-WebRequest -Uri $nurl -OutFile $nout -UseBasicParsing -ErrorAction Stop
+            Expand-Archive -Path $nout -DestinationPath $ndest -Force
+            $nircmd = Join-Path $ndest "nircmd.exe"
+            if (Test-Path $nircmd) {
+              Copy-Item $nircmd -Destination "$env:ProgramFiles\nircmd.exe" -Force -ErrorAction SilentlyContinue
+              Write-Host "✅ nircmd installed to ProgramFiles"
+            } else {
+              Write-Host "⚠ nircmd not found in archive"
+            }
+            Remove-Item $nout -Force -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "⚠ NirCmd download/extract failed: $_"
+          }
 
-      - name: Sunshine Config
+      - name: Try set VB-Cable as default playback & recording (best-effort)
         shell: powershell
         run: |
-          $path = "$env:ProgramData\Sunshine\config.json"
-          $json = @{
+          try {
+            $nircmd = "$env:ProgramFiles\nircmd.exe"
+            if (Test-Path $nircmd) {
+              # Common device names: "CABLE Input (VB-Audio Virtual Cable)"
+              & $nircmd setdefaultsounddevice "CABLE Output (VB-Audio Virtual Cable)" 1
+              & $nircmd setdefaultsounddevice "CABLE Input (VB-Audio Virtual Cable)" 2
+              Write-Host "✅ Attempted to set VB-Cable as default devices via nircmd"
+            } else {
+              Write-Host "⚠ nircmd not available; please set VB-Cable manually in Sound settings"
+            }
+          } catch {
+            Write-Host "⚠ Setting default audio failed: $_"
+          }
+
+      - name: Install Sunshine (GameStream host)
+        shell: powershell
+        run: |
+          $sun = "https://github.com/LizardByte/Sunshine/releases/latest/download/SunshineSetup.exe"
+          $out = "$env:TEMP\SunshineSetup.exe"
+          Invoke-WebRequest -Uri $sun -OutFile $out -UseBasicParsing
+          Start-Process -FilePath $out -ArgumentList "/silent" -Wait -NoNewWindow
+          Remove-Item $out -Force -ErrorAction SilentlyContinue
+          if (Get-Service -Name Sunshine -ErrorAction SilentlyContinue) {
+            Set-Service -Name Sunshine -StartupType Automatic
+            Start-Service Sunshine -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+            Write-Host "✅ Sunshine service started"
+          } else {
+            Write-Host "⚠ Sunshine service not found after install; check installer output"
+          }
+
+      - name: Sunshine firewall (restrict to Tailscale)
+        shell: powershell
+        run: |
+          New-NetFirewallRule -DisplayName "Sunshine-TCP-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 47984,47989,47990,48010 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "Sunshine-UDP-Tailscale" -Direction Inbound -Protocol UDP -LocalPort 47998-48010 -Action Allow -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+          Write-Host "✅ Sunshine firewall rules created (restricted to Tailscale)"
+
+      - name: Write Sunshine config (encoder, user, apps)
+        shell: powershell
+        run: |
+          $cfgDir = "$env:ProgramData\Sunshine"
+          if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
+          $configPath = Join-Path $cfgDir "config.json"
+          $cfg = @{
             webui = @{ enable = $true; port = 47990; require_auth = $true }
-            users = @(@{ name = "PCGMZ"; password = "PCGMZ_secure_pw" })
+            users = @(@{ name = "PCGMZ"; password = "ReplaceThisWebPW" })
             encoder = @{
               preferred = "nvenc"
-              nvenc = @{ preset = "p1"; bitrate = 30000; maxbps = 50000000; low_latency = $true; max_framerate = 60 }
+              nvenc = @{ preset = "p1"; bitrate = 35000; low_latency = $true; max_framerate = 60 }
             }
             apps = @(
-              @{ name = "Steam"; cmd = "C:\Program Files (x86)\Steam\Steam.exe" },
-              @{ name = "Desktop"; cmd = "C:\Windows\explorer.exe" }
+              @{ name="Steam"; cmd="C:\Program Files (x86)\Steam\Steam.exe" },
+              @{ name="Desktop"; cmd="C:\Windows\explorer.exe" }
             )
           } | ConvertTo-Json -Depth 8
-          $json | Out-File -FilePath $path -Encoding utf8
-          Restart-Service Sunshine
-          echo "✅ Sunshine Config Applied"
+          $cfg | Out-File -FilePath $configPath -Encoding utf8
+          Restart-Service -Name Sunshine -ErrorAction SilentlyContinue
+          Write-Host "✅ Sunshine config written to $configPath"
 
-      - name: GPU Optimizations
+      - name: Auto-create Steam Big Picture startup task
+        shell: powershell
+        run: |
+          $steam = "C:\Program Files (x86)\Steam\steam.exe"
+          if (Test-Path $steam) {
+            schtasks /Create /RU SYSTEM /SC ONSTART /TN "PCGMZ_StartSteamBigPicture" /TR "`"$steam`" -bigpicture" /F
+            Write-Host "✅ Scheduled task created to start Steam Big Picture on startup"
+          } else {
+            Write-Host "⚠ Steam not found at $steam — skipping auto-start creation"
+          }
+
+      - name: Low-latency GPU & network tweaks (anti-jitter, pacing, HPTS)
         shell: powershell
         run: |
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v HwSchMode /t REG_DWORD /d 2 /f
-          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 0xffffffff /f
+          reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /t REG_DWORD /d 30 /f
           reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0 /f
-          echo "✅ GPU Optimization Applied"
+          bcdedit /set useplatformclock yes || Write-Host "bcdedit useplatformclock may require elevation"
+          Write-Host "✅ Low-latency and GPU tweaks applied (best-effort)"
 
-      - name: Keep Alive
+      - name: Create Sunshine auto-restart monitor
         shell: powershell
         run: |
-          Write-Host "==============================="
-          Write-Host "🌐 PCGMZ GameStream Ready"
-          Write-Host "Tailscale IP : $env:TS_IP"
-          Write-Host "RDP Username : $env:RDP_USER"
-          Write-Host "RDP Password : $env:RDP_PASS"
-          Write-Host "Sunshine Web : http://$env:TS_IP:47990"
-          Write-Host "Moonlight IP : $env:TS_IP"
-          Write-Host "==============================="
+          $monitor = "$env:ProgramData\PCGMZ_Sunshine_Monitor.ps1"
+          @"
           while ($true) {
-            Write-Host "$(Get-Date) PCGMZ alive..."
+            try {
+              $svc = Get-Service -Name Sunshine -ErrorAction SilentlyContinue
+              if (-not $svc -or $svc.Status -ne 'Running') {
+                Write-Host '[Sunshine Monitor] Sunshine not running - attempting restart'
+                if ($svc) { Start-Service -Name Sunshine -ErrorAction SilentlyContinue } else {
+                  $exe = 'C:\Program Files\Sunshine\sunshine.exe'
+                  if (Test-Path $exe) { Start-Process -FilePath $exe -ArgumentList '--service' -WindowStyle Hidden -ErrorAction SilentlyContinue }
+                }
+              }
+            } catch {
+              Write-Host '[Sunshine Monitor] Exception: ' $_
+            }
+            Start-Sleep -Seconds 20
+          }
+"@ | Out-File -FilePath $monitor -Encoding utf8 -Force
+          schtasks /Create /RU SYSTEM /SC ONSTART /TN "PCGMZ_SunshineMonitor" /TR "powershell -ExecutionPolicy Bypass -File `"$monitor`"" /F
+          Start-Process -FilePath powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$monitor`"" -WindowStyle Hidden -ErrorAction SilentlyContinue
+          Write-Host "✅ Sunshine monitor script created and scheduled"
+
+      - name: Final info & keep-alive
+        shell: powershell
+        run: |
+          Write-Host "====================================="
+          Write-Host "PCGMZ Moonlight Ultra + Audio READY"
+          Write-Host "Tailscale IP : $env:TS_IP"
+          Write-Host "RDP User    : $env:RDP_USER"
+          Write-Host "RDP Pass    : $env:RDP_PASS"
+          Write-Host "Sunshine UI : http://$env:TS_IP:47990 (Tailscale-only)"
+          Write-Host "Moonlight   : Connect via Moonlight APK → Add Host → IP: $env:TS_IP"
+          Write-Host "Note: If VB-Cable or audio defaults failed to set, open Sunshine web UI and set audio devices manually."
+          Write-Host "====================================="
+          while ($true) {
+            Write-Host "$(Get-Date) PCGMZ Moonlight Ultra alive..."
             Start-Sleep -Seconds 300
           }
           
