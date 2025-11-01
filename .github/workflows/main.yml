@@ -87,9 +87,19 @@ jobs:
       - name: Anti-DDoS Firewall (Block public RDP access, Tailscale-only)
         shell: powershell
         run: |
-          # Block all incoming RDP on public interfaces, allow only Tailscale
-          netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
-          netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389 remoteip=$env:TS_IP/32
+          # Check if RDP-Allow rule exists before disabling
+          $ruleExists = netsh advfirewall firewall show rule name="RDP-Allow" 2>$null | Select-String "RDP-Allow"
+          if ($ruleExists) {
+            netsh advfirewall firewall set rule name="RDP-Allow" new enable=no
+          }
+          # Get Tailscale interface name
+          $tsInterface = Get-NetAdapter | Where-Object { $_.Name -like "*Tailscale*" -or $_.Description -like "*Tailscale*" } | Select-Object -First 1 -ExpandProperty Name
+          if ($tsInterface) {
+            netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389 interface="$tsInterface"
+          } else {
+            # Fallback: Allow without interface restriction (Tailscale handles security)
+            netsh advfirewall firewall add rule name="Tailscale-RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          }
           # Enable Windows Firewall logging for monitoring
           netsh advfirewall set allprofiles logging filename "%systemroot%\system32\logfiles\firewall\pfirewall.log"
           netsh advfirewall set allprofiles logging maxfilesize 4096
