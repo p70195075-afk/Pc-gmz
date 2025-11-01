@@ -164,7 +164,6 @@ jobs:
             } catch { Write-Host "[Monitor] Exception: $_" }
             Start-Sleep -Seconds 20
           }
-'@
           Set-Content -Path $monitor -Value $script -Encoding UTF8
           schtasks /Create /RU SYSTEM /SC ONSTART /TN "PCGMZ_SunshineMonitor" /TR "powershell -ExecutionPolicy Bypass -File `"$monitor`"" /F
           Write-Host "✅ Sunshine monitor created"
