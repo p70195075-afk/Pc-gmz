@@ -109,28 +109,137 @@ jobs:
               echo "⚠️ Sunshine.exe not found, but continuing..."
           }
 
-      - name: Install Tailscale PC-V1 
+      - name: Install and Configure Tailscale PC-V1
         shell: powershell
         run: |
+          # Install Tailscale
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $file = "$env:TEMP\tailscale.msi"
           try {
-              Invoke-WebRequest -Uri $url -OutFile $file
-              Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
-              Remove-Item $file -Force
-              echo "Tailscale installed successfully"
+              Write-Host "Downloading Tailscale..."
+              Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 60
+              
+              Write-Host "Installing Tailscale..."
+              $process = Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait -PassThru
+              
+              if ($process.ExitCode -eq 0) {
+                  Write-Host "✅ Tailscale installed successfully"
+              } else {
+                  Write-Host "⚠️ Tailscale installation exit code: $($process.ExitCode)"
+              }
+              
+              if (Test-Path $file) {
+                  Remove-Item $file -Force
+              }
+              
+              Start-Sleep -Seconds 10
+              
           } catch {
-              echo "Tailscale installation failed: $($_.Exception.Message)"
+              Write-Host "❌ Tailscale installation failed: $($_.Exception.Message)"
+              exit 1
           }
 
-      - name: Establish Tailscale Connection PC-V1 
-        shell: powershell
-        run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "PC-V1-Sunshine-${{ github.run_id }}"
+          # Wait for Tailscale service
+          Write-Host "Waiting for Tailscale service to be ready..."
+          $maxAttempts = 10
+          $attempt = 0
+          $tailscaleExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $serviceReady = $false
+          
+          while ($attempt -lt $maxAttempts) {
+              $attempt++
+              Write-Host "Attempt $attempt of $maxAttempts..."
+              
+              if (Test-Path $tailscaleExe) {
+                  Write-Host "✅ Tailscale executable found"
+                  
+                  $service = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+                  if ($service -and $service.Status -eq 'Running') {
+                      Write-Host "✅ Tailscale service is running"
+                      
+                      $testResult = & $tailscaleExe version 2>&1
+                      if ($LASTEXITCODE -eq 0) {
+                          Write-Host "✅ Tailscale command test successful"
+                          $serviceReady = $true
+                          break
+                      } else {
+                          Write-Host "⚠️ Tailscale command test failed, retrying..."
+                      }
+                  } else {
+                      Write-Host "⚠️ Tailscale service not running, attempting to start..."
+                      try {
+                          Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+                          Start-Sleep -Seconds 5
+                      } catch {
+                          Write-Host "Service start attempt failed"
+                      }
+                  }
+              } else {
+                  Write-Host "⚠️ Tailscale executable not found yet"
+              }
+              
+              Start-Sleep -Seconds 5
+          }
+          
+          if (-not $serviceReady) {
+              Write-Host "❌ Tailscale service not ready after $maxAttempts attempts"
+          }
+
+          # Establish Tailscale connection
+          if (-not (Test-Path $tailscaleExe)) {
+              Write-Host "❌ Tailscale executable not found at: $tailscaleExe"
+              Write-Host "Available in Program Files:"
+              Get-ChildItem "$env:ProgramFiles" | ForEach-Object { Write-Host "  - $($_.Name)" }
+              exit 1
+          }
+          
+          Write-Host "Starting Tailscale connection..."
+          
+          Write-Host "Current Tailscale status:"
+          & $tailscaleExe status
+          
+          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          if ([string]::IsNullOrEmpty($authKey)) {
+              Write-Host "❌ TAILSCALE_AUTH_KEY secret is empty or not set"
+              exit 1
+          }
+          
+          Write-Host "Running tailscale up command..."
+          & $tailscaleExe up --authkey $authKey --hostname "PC-V1-Sunshine-${{ github.run_id }}"
+          
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ Tailscale up failed with exit code: $LASTEXITCODE"
+              Write-Host "Trying alternative approach..."
+              
+              & $tailscaleExe logout
+              Start-Sleep -Seconds 2
+              & $tailscaleExe up --authkey $authKey --hostname "PC-V1-Sunshine-${{ github.run_id }}" --reset
+          }
+          
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host "✅ Tailscale connected successfully"
+          } else {
+              Write-Host "⚠️ Tailscale connection had issues, but continuing workflow..."
+          }
+          
           Start-Sleep -Seconds 10
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
-          echo "Tailscale connected: $tsIP"
+          
+          Write-Host "Getting Tailscale IP..."
+          $tsIP = & $tailscaleExe ip -4
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrEmpty($tsIP)) {
+              Write-Host "TS_IP=$tsIP" >> $env:GITHUB_ENV
+              Write-Host "✅ Tailscale connected: $tsIP"
+          } else {
+              $tsStatus = & $tailscaleExe status --json | ConvertFrom-Json
+              if ($tsStatus -and $tsStatus.Self -and $tsStatus.Self.TailscaleIPs) {
+                  $tsIP = $tsStatus.Self.TailscaleIPs[0]
+                  Write-Host "TS_IP=$tsIP" >> $env:GITHUB_ENV
+                  Write-Host "✅ Tailscale connected (via JSON): $tsIP"
+              } else {
+                  Write-Host "⚠️ Could not get Tailscale IP, but continuing workflow..."
+                  Write-Host "TS_IP=unknown" >> $env:GITHUB_ENV
+              }
+          }
 
       - name: Configure Firewall for Sunshine
         shell: powershell
@@ -205,7 +314,7 @@ jobs:
           netsh advfirewall firewall add rule name="PC-V1-Random-$randomPort" dir=in action=allow protocol=TCP localport=$randomPort 2>&1 | Out-Null
           
           Restart-Service -Name TermService -Force
-          echo "PC-V1_PORT=$randomPort" >> $env:GITHUB_ENV
+          echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
           echo "PC-V1 port set to: $randomPort"
 
       - name: Verify Services and Connectivity
@@ -235,7 +344,7 @@ jobs:
           }
           
           $tsIP = $env:TS_IP
-          if ($tsIP) {
+          if ($tsIP -and $tsIP -ne "unknown") {
               echo "🌐 Tailscale IP: $tsIP"
               
               try {
@@ -248,6 +357,8 @@ jobs:
               } catch {
                   echo "⚠️ Tailscale connectivity test failed"
               }
+          } else {
+              echo "⚠️ Tailscale IP: Not available"
           }
 
       - name: Create Connection Monitor PC-V1
@@ -286,6 +397,7 @@ jobs:
               
               Start-Sleep -Seconds 30
           }
+'@
 
           $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
           try {
@@ -360,38 +472,4 @@ jobs:
                   $hours = [math]::Floor($uptime.TotalHours)
                   $minutes = [math]::Floor($uptime.TotalMinutes) % 60
                   
-                  $sunshineProcess = Get-Process -Name "sunshine" -ErrorAction SilentlyContinue
-                  $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-                  $tailscaleProcess = Get-Process -Name "tailscale" -ErrorAction SilentlyContinue
-                  
-                  $sunshineStatus = if ($sunshineProcess) { "✅" } else { "❌" }
-                  $rdpStatus = if ($rdpService -and $rdpService.Status -eq 'Running') { "✅" } else { "❌" }
-                  $tailscaleStatus = if ($tailscaleProcess) { "✅" } else { "❌" }
-                  
-                  Write-Host "[$($currentTime.ToString('HH:mm:ss'))] Uptime: ${hours}h ${minutes}m | Sunshine: $sunshineStatus | RDP: $rdpStatus | Tailscale: $tailscaleStatus | IP: $tsIP"
-                  
-                  if (-not $sunshineProcess -and $errorCount -lt 3) {
-                      Write-Host "   ↳ Attempting to restart Sunshine..."
-                      if (Test-Path "C:\Sunshine\sunshine.exe") {
-                          $newProcess = Start-Process -FilePath "C:\Sunshine\sunshine.exe" -WindowStyle Hidden -PassThru
-                          if ($newProcess) {
-                              Write-Host "   ↳ Sunshine restarted with PID: $($newProcess.Id)"
-                              $errorCount = 0
-                          } else {
-                              $errorCount++
-                              Write-Host "   ↳ Sunshine restart failed (attempt $errorCount/3)"
-                          }
-                      }
-                  }
-                  
-                  if ($sunshineProcess -and $rdpService -and $rdpService.Status -eq 'Running') {
-                      if ($errorCount > 0) { $errorCount = 0 }
-                  }
-                  
-              } catch {
-                  Write-Host "   ⚠️ Maintenance Error: $_"
-                  $errorCount++
-              }
-              
-              Start-Sleep -Seconds 60
-          }
+                  $sunshineProcess = Get-Process -Name "sunshine" -ErrorAction SilentlyContinu
