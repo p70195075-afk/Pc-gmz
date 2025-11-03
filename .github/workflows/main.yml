@@ -1,4 +1,4 @@
-name: PC-V1
+name: PC-V1 Moonlight
 
 on:
   workflow_dispatch:
@@ -16,9 +16,9 @@ jobs:
           powercfg /change monitor-timeout-ac 0
           powercfg /hibernate off
           powercfg /setactive SCHEME_MIN
-          echo Disabled Sleep/Hibernate
+          echo "✅ Disabled Sleep/Hibernate"
 
-      - name: Optimize Network for Streaming PC-V1
+      - name: Optimize Network for Streaming
         shell: powershell
         run: |
           netsh interface tcp set global congestionprovider=ctcp
@@ -26,9 +26,9 @@ jobs:
           netsh interface tcp set global ecncapability=enabled
           netsh int tcp set global autotuninglevel=experimental
           netsh interface tcp set global timestamps=disabled
-          echo Network Streaming Optimization Applied
+          echo "✅ Network Streaming Optimization Applied"
 
-      - name: Configure Core PC-V1 Settings
+      - name: Configure Core Settings
         shell: powershell
         run: |
           Start-Process powershell -Verb runAs -ArgumentList @"
@@ -36,29 +36,42 @@ jobs:
             netsh advfirewall firewall add rule name='RDP-Allow' dir=in action=allow protocol=TCP localport=3389
             Restart-Service -Name TermService -Force
           "@
+          echo "✅ Core settings configured"
 
-      - name: Create PC-V1 User
+      - name: Create User Account
         shell: powershell
         run: |
           Add-Type -AssemblyName System.Security
           $chars = ([char[]](33..126))
           $password = -join ($chars | Get-Random -Count 14)
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (-not (Get-LocalUser -Name "PC-V1" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "PC-V1" -Password $securePass -AccountNeverExpires
+          
+          # Remove existing user if any
+          $existingUser = Get-LocalUser -Name "StreamUser" -ErrorAction SilentlyContinue
+          if ($existingUser) {
+              Remove-LocalUser -Name "StreamUser" -ErrorAction SilentlyContinue
           }
-          Add-LocalGroupMember -Group "Administrators" -Member "PC-V1"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "PC-V1"
-          echo "RDP_USER=PC-V1" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          
+          # Create new user
+          New-LocalUser -Name "StreamUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "StreamUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "StreamUser"
+          
+          echo "STREAM_USER=StreamUser" >> $env:GITHUB_ENV
+          echo "STREAM_PASS=$password" >> $env:GITHUB_ENV
+          echo "✅ User account created"
 
-      - name: Install Sunshine PC-V1 
+      - name: Setup Sunshine Directory
         shell: powershell
         run: |
           $sunshinePath = "C:\Sunshine"
           $configDir = "$env:APPDATA\Sunshine"
           
+          # Stop any running Sunshine processes
           Get-Process -Name "sunshine" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          
+          # Clean and create directories
           if (Test-Path $sunshinePath) {
               Remove-Item -Path $sunshinePath -Recurse -Force -ErrorAction SilentlyContinue
           }
@@ -66,66 +79,64 @@ jobs:
           New-Item -Path $sunshinePath -ItemType Directory -Force
           New-Item -Path $configDir -ItemType Directory -Force
           
-          echo "✅ Directories created successfully"
+          echo "SUNSHINE_PATH=$sunshinePath" >> $env:GITHUB_ENV
+          echo "✅ Sunshine directories created"
 
-      - name: Download and Extract Sunshine PC-V1 
+      - name: Download and Install Sunshine
         shell: powershell
         run: |
-          $sunshinePath = "C:\Sunshine"
+          $sunshinePath = $env:SUNSHINE_PATH
+          $sunshineUrl = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.0/sunshine-windows-portable.zip"
+          $zipFile = "$env:TEMP\sunshine-latest.zip"
           
           echo "Downloading Sunshine..."
           try {
-              $url = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.0/sunshine-windows-portable.zip"
-              $file = "$env:TEMP\sunshine.zip"
+              # Download using multiple methods for reliability
+              $progressPreference = 'SilentlyContinue'
+              Invoke-WebRequest -Uri $sunshineUrl -OutFile $zipFile -TimeoutSec 120
               
-              Start-BitsTransfer -Source $url -Destination $file
-              
-              if (Test-Path $file) {
-                  Expand-Archive -Path $file -DestinationPath $sunshinePath -Force
-                  Remove-Item $file -Force
-                  echo "✅ Sunshine downloaded and extracted successfully"
-              }
-          } catch {
-              echo "Download failed, trying alternative method..."
-              try {
-                  Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 120
-                  if (Test-Path $file) {
-                      Expand-Archive -Path $file -DestinationPath $sunshinePath -Force
-                      Remove-Item $file -Force
-                      echo "✅ Alternative download successful"
-                  }
-              } catch {
-                  echo "❌ All download methods failed: $($_.Exception.Message)"
-                  echo "@echo off" > "$sunshinePath\sunshine.bat"
-                  echo "echo Sunshine placeholder - real installation failed" >> "$sunshinePath\sunshine.bat"
-                  echo "timeout /nobreak > nul" >> "$sunshinePath\sunshine.bat"
+              if (Test-Path $zipFile) {
+                  echo "Extracting Sunshine..."
+                  Expand-Archive -Path $zipFile -DestinationPath $sunshinePath -Force
+                  Remove-Item $zipFile -Force
+                  echo "✅ Sunshine downloaded and extracted"
+              } else {
+                  throw "Download failed"
               }
           }
+          catch {
+              echo "❌ Download failed: $($_.Exception.Message)"
+              # Create placeholder to continue workflow
+              echo "@echo off" > "$sunshinePath\sunshine.bat"
+              echo "echo Sunshine placeholder" >> "$sunshinePath\sunshine.bat"
+              echo "timeout /t 300" >> "$sunshinePath\sunshine.bat"
+          }
           
+          # Verify installation
           if (Test-Path "$sunshinePath\sunshine.exe") {
-              echo "🎉 Sunshine installation verified"
+              echo "🎉 Sunshine executable verified"
               Get-ChildItem $sunshinePath | ForEach-Object { echo "  - $($_.Name)" }
           } else {
               echo "⚠️ Sunshine.exe not found, but continuing..."
           }
 
-      - name: Install and Configure Tailscale PC-V1
+      - name: Install and Configure Tailscale
         shell: powershell
         run: |
           # Install Tailscale
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $file = "$env:TEMP\tailscale.msi"
           try {
-              Write-Host "Downloading Tailscale..."
+              echo "Downloading Tailscale..."
               Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 60
               
-              Write-Host "Installing Tailscale..."
+              echo "Installing Tailscale..."
               $process = Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait -PassThru
               
               if ($process.ExitCode -eq 0) {
-                  Write-Host "✅ Tailscale installed successfully"
+                  echo "✅ Tailscale installed successfully"
               } else {
-                  Write-Host "⚠️ Tailscale installation exit code: $($process.ExitCode)"
+                  echo "⚠️ Tailscale installation exit code: $($process.ExitCode)"
               }
               
               if (Test-Path $file) {
@@ -135,12 +146,12 @@ jobs:
               Start-Sleep -Seconds 10
               
           } catch {
-              Write-Host "❌ Tailscale installation failed: $($_.Exception.Message)"
+              echo "❌ Tailscale installation failed: $($_.Exception.Message)"
               exit 1
           }
 
           # Wait for Tailscale service
-          Write-Host "Waiting for Tailscale service to be ready..."
+          echo "Waiting for Tailscale service..."
           $maxAttempts = 10
           $attempt = 0
           $tailscaleExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
@@ -148,96 +159,78 @@ jobs:
           
           while ($attempt -lt $maxAttempts) {
               $attempt++
-              Write-Host "Attempt $attempt of $maxAttempts..."
+              echo "Attempt $attempt of $maxAttempts..."
               
               if (Test-Path $tailscaleExe) {
-                  Write-Host "✅ Tailscale executable found"
+                  echo "✅ Tailscale executable found"
                   
                   $service = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
                   if ($service -and $service.Status -eq 'Running') {
-                      Write-Host "✅ Tailscale service is running"
+                      echo "✅ Tailscale service is running"
                       
                       $testResult = & $tailscaleExe version 2>&1
                       if ($LASTEXITCODE -eq 0) {
-                          Write-Host "✅ Tailscale command test successful"
+                          echo "✅ Tailscale command test successful"
                           $serviceReady = $true
                           break
                       } else {
-                          Write-Host "⚠️ Tailscale command test failed, retrying..."
+                          echo "⚠️ Tailscale command test failed, retrying..."
                       }
                   } else {
-                      Write-Host "⚠️ Tailscale service not running, attempting to start..."
+                      echo "⚠️ Tailscale service not running, attempting to start..."
                       try {
                           Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
                           Start-Sleep -Seconds 5
                       } catch {
-                          Write-Host "Service start attempt failed"
+                          echo "Service start attempt failed"
                       }
                   }
               } else {
-                  Write-Host "⚠️ Tailscale executable not found yet"
+                  echo "⚠️ Tailscale executable not found yet"
               }
               
               Start-Sleep -Seconds 5
           }
-          
-          if (-not $serviceReady) {
-              Write-Host "❌ Tailscale service not ready after $maxAttempts attempts"
-          }
 
           # Establish Tailscale connection
           if (-not (Test-Path $tailscaleExe)) {
-              Write-Host "❌ Tailscale executable not found at: $tailscaleExe"
-              Write-Host "Available in Program Files:"
-              Get-ChildItem "$env:ProgramFiles" | ForEach-Object { Write-Host "  - $($_.Name)" }
+              echo "❌ Tailscale executable not found"
               exit 1
           }
           
-          Write-Host "Starting Tailscale connection..."
-          
-          Write-Host "Current Tailscale status:"
-          & $tailscaleExe status
-          
+          echo "Starting Tailscale connection..."
           $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
           if ([string]::IsNullOrEmpty($authKey)) {
-              Write-Host "❌ TAILSCALE_AUTH_KEY secret is empty or not set"
+              echo "❌ TAILSCALE_AUTH_KEY secret is not set"
               exit 1
           }
           
-          Write-Host "Running tailscale up command..."
-          & $tailscaleExe up --authkey $authKey --hostname "PC-V1-Sunshine-${{ github.run_id }}"
+          & $tailscaleExe up --authkey $authKey --hostname "Moonlight-PC-${{ github.run_id }}"
           
           if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ Tailscale up failed with exit code: $LASTEXITCODE"
-              Write-Host "Trying alternative approach..."
-              
+              echo "❌ Tailscale up failed, trying with reset..."
               & $tailscaleExe logout
               Start-Sleep -Seconds 2
-              & $tailscaleExe up --authkey $authKey --hostname "PC-V1-Sunshine-${{ github.run_id }}" --reset
-          }
-          
-          if ($LASTEXITCODE -eq 0) {
-              Write-Host "✅ Tailscale connected successfully"
-          } else {
-              Write-Host "⚠️ Tailscale connection had issues, but continuing workflow..."
+              & $tailscaleExe up --authkey $authKey --hostname "Moonlight-PC-${{ github.run_id }}" --reset
           }
           
           Start-Sleep -Seconds 10
           
-          Write-Host "Getting Tailscale IP..."
+          # Get Tailscale IP
+          echo "Getting Tailscale IP..."
           $tsIP = & $tailscaleExe ip -4
           if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrEmpty($tsIP)) {
-              Write-Host "TS_IP=$tsIP" >> $env:GITHUB_ENV
-              Write-Host "✅ Tailscale connected: $tsIP"
+              echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+              echo "✅ Tailscale connected: $tsIP"
           } else {
               $tsStatus = & $tailscaleExe status --json | ConvertFrom-Json
               if ($tsStatus -and $tsStatus.Self -and $tsStatus.Self.TailscaleIPs) {
                   $tsIP = $tsStatus.Self.TailscaleIPs[0]
-                  Write-Host "TS_IP=$tsIP" >> $env:GITHUB_ENV
-                  Write-Host "✅ Tailscale connected (via JSON): $tsIP"
+                  echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+                  echo "✅ Tailscale connected (via JSON): $tsIP"
               } else {
-                  Write-Host "⚠️ Could not get Tailscale IP, but continuing workflow..."
-                  Write-Host "TS_IP=unknown" >> $env:GITHUB_ENV
+                  echo "⚠️ Could not get Tailscale IP"
+                  echo "TAILSCALE_IP=unknown" >> $env:GITHUB_ENV
               }
           }
 
@@ -247,228 +240,98 @@ jobs:
           $ports = @(47984, 47989, 47990, 48010)
           
           foreach ($port in $ports) {
+              # Remove existing rules
+              netsh advfirewall firewall delete rule name="Sunshine-$port-TCP" 2>&1 | Out-Null
+              netsh advfirewall firewall delete rule name="Sunshine-$port-UDP" 2>&1 | Out-Null
+              
+              # Add new rules
               netsh advfirewall firewall add rule name="Sunshine-$port-TCP" dir=in action=allow protocol=TCP localport=$port 2>&1 | Out-Null
               netsh advfirewall firewall add rule name="Sunshine-$port-UDP" dir=in action=allow protocol=UDP localport=$port 2>&1 | Out-Null
           }
           
-          echo "Sunshine firewall rules configured"
+          echo "✅ Sunshine firewall rules configured"
 
-      - name: Start Sunshine Application PC-V1 
+      - name: Generate Sunshine Configuration
         shell: powershell
         run: |
-          $sunshinePath = "C:\Sunshine"
+          $configDir = "$env:APPDATA\Sunshine"
+          $configFile = "$configDir\sunshine.conf"
+          
+          # Basic Sunshine configuration
+          $configContent = @'
+# Sunshine Configuration for Moonlight
+# Auto-generated by GitHub Actions
+
+{
+  "global": {
+    "gamepad": "x360",
+    "upnp": false,
+    "origin_web_ui_allowed": "pc",
+    "min_log_level": 2
+  },
+  "apps": [
+    {
+      "name": "Desktop",
+      "output": "",
+      "cmd": "explorer.exe",
+      "detached": [
+        "explorer.exe"
+      ]
+    }
+  ],
+  "nvhttp": {
+    "port": 47989,
+    "pin": "123456",
+    "pkey": "sunshine.pem",
+    "cert": "sunshine.crt"
+  }
+}
+'@
+          
+          # Write configuration
+          $configContent | Out-File -FilePath $configFile -Encoding utf8
+          echo "✅ Sunshine configuration generated"
+
+      - name: Start Sunshine Service
+        shell: powershell
+        run: |
+          $sunshinePath = $env:SUNSHINE_PATH
           $sunshineExe = "$sunshinePath\sunshine.exe"
           
-          echo "Starting Sunshine application..."
+          echo "Starting Sunshine service..."
           
+          # Kill any existing Sunshine processes
           Get-Process -Name "sunshine" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           
           if (Test-Path $sunshineExe) {
               try {
-                  Set-Location -Path $sunshinePath
+                  # Start Sunshine in background
+                  $process = Start-Process -FilePath $sunshineExe -WindowStyle Hidden -PassThru
                   
-                  $job = Start-Job -ScriptBlock {
-                      Set-Location $using:sunshinePath
-                      & ".\sunshine.exe"
-                  }
-                  
-                  Start-Sleep -Seconds 10
-
-                  $sunshineProcess = Get-Process -Name "sunshine" -ErrorAction SilentlyContinue
-                  if ($sunshineProcess) {
-                      echo "SUNSHINE_PID=$($sunshineProcess.Id)" >> $env:GITHUB_ENV
-                      echo "✅ Sunshine started successfully with PID: $($sunshineProcess.Id)"
-                      echo "✅ Sunshine is running as process"
-                  } else {
-                      echo "⚠️ Sunshine process not found after startup attempt"
-                      echo "Trying alternative startup method..."
+                  if ($process -and !$process.HasExited) {
+                      echo "SUNSHINE_PID=$($process.Id)" >> $env:GITHUB_ENV
+                      echo "✅ Sunshine started with PID: $($process.Id)"
                       
-                      $process = Start-Process -FilePath $sunshineExe -WindowStyle Hidden -PassThru
-                      Start-Sleep -Seconds 5
+                      # Wait for Sunshine to initialize
+                      echo "Waiting for Sunshine to initialize..."
+                      Start-Sleep -Seconds 15
                       
-                      if ($process -and !$process.HasExited) {
-                          echo "SUNSHINE_PID=$($process.Id)" >> $env:GITHUB_ENV
-                          echo "✅ Sunshine started with alternative method, PID: $($process.Id)"
-                      } else {
-                          echo "❌ Sunshine failed to start with both methods"
+                      # Test if Sunshine web interface is accessible
+                      try {
+                          $response = Invoke-WebRequest -Uri "http://localhost:47989" -TimeoutSec 10 -ErrorAction SilentlyContinue
+                          echo "✅ Sunshine web interface is accessible"
+                      } catch {
+                          echo "⚠️ Sunshine web interface not responding yet: $($_.Exception.Message)"
                       }
+                  } else {
+                      echo "❌ Failed to start Sunshine process"
                   }
-                  
               } catch {
                   echo "❌ Error starting Sunshine: $($_.Exception.Message)"
               }
           } else {
               echo "⚠️ Sunshine executable not found at: $sunshineExe"
-              echo "Continuing workflow without Sunshine..."
-          }
-          
-          echo "✅ Step completed (Sunshine start attempted)"
-
-      - name: PC-V1 Port Configuration
-        shell: powershell
-        run: |
-          $randomPort = Get-Random -Minimum 10000 -Maximum 65535
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PortNumber' -Value $randomPort -Force
-          
-          netsh advfirewall firewall add rule name="PC-V1-Random-$randomPort" dir=in action=allow protocol=TCP localport=$randomPort 2>&1 | Out-Null
-          
-          Restart-Service -Name TermService -Force
-          echo "RDP_PORT=$randomPort" >> $env:GITHUB_ENV
-          echo "PC-V1 port set to: $randomPort"
-
-      - name: Verify Services and Connectivity
-        shell: powershell
-        run: |
-          echo "=== Service Status ==="
-          
-          $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-          if ($rdpService -and $rdpService.Status -eq 'Running') {
-              echo "✅ PC-V1 Service: RUNNING"
-          } else {
-              echo "❌ PC-V1 Service: NOT RUNNING"
-          }
-          
-          $sunshineProcess = Get-Process -Name "sunshine" -ErrorAction SilentlyContinue
-          if ($sunshineProcess) {
-              echo "✅ Sunshine Process: RUNNING (PID: $($sunshineProcess.Id))"
-              
-              try {
-                  $response = Invoke-WebRequest -Uri "http://localhost:47989" -TimeoutSec 5 -ErrorAction SilentlyContinue
-                  echo "✅ Sunshine Web Interface: ACCESSIBLE"
-              } catch {
-                  echo "⚠️ Sunshine Web Interface: Not responding (may need more time)"
-              }
-          } else {
-              echo "⚠️ Sunshine Process: NOT RUNNING"
-          }
-          
-          $tsIP = $env:TS_IP
-          if ($tsIP -and $tsIP -ne "unknown") {
-              echo "🌐 Tailscale IP: $tsIP"
-              
-              try {
-                  $ping = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
-                  if ($ping.TcpTestSucceeded) {
-                      echo "✅ Tailscale RDP Port: REACHABLE"
-                  } else {
-                      echo "⚠️ Tailscale PC-V1 Port: Not reachable"
-                  }
-              } catch {
-                  echo "⚠️ Tailscale connectivity test failed"
-              }
-          } else {
-              echo "⚠️ Tailscale IP: Not available"
           }
 
-      - name: Create Connection Monitor PC-V1
-        shell: powershell
-        run: |
-          $monitorScript = @'
-          while ($true) {
-              try {
-                  $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                  
-                  $sunshine = Get-Process -Name "sunshine" -ErrorAction SilentlyContinue
-                  if (-not $sunshine) {
-                      Write-Host "[$timestamp] Sunshine not running - attempting to start..."
-                      if (Test-Path "C:\Sunshine\sunshine.exe") {
-                          Start-Process -FilePath "C:\Sunshine\sunshine.exe" -WindowStyle Hidden
-                          Start-Sleep -Seconds 10
-                      }
-                  } else {
-                      Write-Host "[$timestamp] Sunshine OK (PID: $($sunshine.Id))"
-                  }
-                  
-                  $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-                  if ($rdpService.Status -ne 'Running') {
-                      Write-Host "[$timestamp] RDP Service stopped - restarting..."
-                      Start-Service -Name "TermService" -ErrorAction SilentlyContinue
-                  }
-                  
-                  $tailscale = Get-Process -Name "tailscale" -ErrorAction SilentlyContinue
-                  if (-not $tailscale) {
-                      Write-Host "[$timestamp] Tailscale not running"
-                  }
-                  
-              } catch {
-                  Write-Host "[$timestamp] Monitor error: $_"
-              }
-              
-              Start-Sleep -Seconds 30
-          }
-
-          $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
-          try {
-              $monitorScript | Out-File -FilePath $scriptPath -Encoding utf8
-              echo "✅ Monitor script created at: $scriptPath"
-          } catch {
-              echo "⚠️ Failed to create monitor script: $_"
-          }
-          
-          try {
-              $powershellProcess = Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$scriptPath`"" -WindowStyle Hidden -PassThru
-              if ($powershellProcess) {
-                  echo "✅ Background monitor started with PID: $($powershellProcess.Id)"
-              } else {
-                  echo "⚠️ Background monitor start attempted but PID not captured"
-              }
-          } catch {
-              echo "⚠️ Failed to start background monitor: $_"
-          }
-          
-          echo "✅ Connection Monitor setup completed successfully"
-
-      - name: Display Connection Information
-        shell: powershell
-        run: |
-          $tsIP = $env:TS_IP
-          $rdpPort = $env:RDP_PORT
-          
-          Write-Host ""
-          Write-Host "==========================="
-          Write-Host "🎮 PC-V1 MOONLIGHT"
-          Write-Host "==========================="
-          Write-Host ""
-          Write-Host "🌐 Connection Details:"
-          Write-Host "   Sunshine Host: $tsIP"
-          Write-Host "   Sunshine Port: 47989"
-          Write-Host "   PC-V1 Access: $tsIP`:$rdpPort"
-          Write-Host ""
-          Write-Host "👤 Login Credentials:"
-          Write-Host "   Username: $env:RDP_USER" 
-          Write-Host "   Password: $env:RDP_PASS"
-          Write-Host ""
-          Write-Host "📱 Moonlight Setup:"
-          Write-Host "   1. Install Moonlight app"
-          Write-Host "   2. Add PC: $tsIP"
-          Write-Host "   3. Web UI: https://$tsIP`:47989"
-          Write-Host ""
-          Write-Host "⚡ Status:"
-          $sunshineStatus = if (Get-Process -Name "sunshine" -ErrorAction SilentlyContinue) { "✅ RUNNING" } else { "❌ STOPPED" }
-          Write-Host "   Sunshine: $sunshineStatus"
-          Write-Host "   Tailscale: ✅ CONNECTED"
-          Write-Host "   PC-V1: ✅ ENABLED"
-          Write-Host ""
-          Write-Host "==========================="
-
-      - name: Maintain Active Session (Simple Keepalive)
-        shell: powershell
-        run: |
-          $tsIP = $env:TS_IP
-          $startTime = Get-Date
-          $errorCount = 0
-          
-          Write-Host "🔄 Active Session Maintenance Started..."
-          Write-Host "📡 Tailscale IP: $tsIP"
-          Write-Host "⏰ Start Time: $startTime"
-          Write-Host ""
-          
-          while ($true) {
-              try {
-                  $currentTime = Get-Date
-                  $uptime = $currentTime - $startTime
-                  $hours = [math]::Floor($uptime.TotalHours)
-                  $minutes = [math]::Floor($uptime.TotalMinutes) % 60
-                  
-                  $sunshineProcess = Get-Process -Name "sunshine" -ErrorAction SilentlyContinu
+     
