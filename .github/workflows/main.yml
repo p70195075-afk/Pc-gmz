@@ -397,7 +397,6 @@ jobs:
               
               Start-Sleep -Seconds 30
           }
-'@
 
           $scriptPath = "$env:ProgramData\sunshine-monitor.ps1"
           try {
